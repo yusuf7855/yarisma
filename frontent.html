@@ -1,0 +1,1700 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SpectraLoop Final v3.1 - Motor Control System FIXED</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #0f1419 0%, #1a1a2e 50%, #16213e 100%);
+            color: #ffffff;
+            min-height: 100vh;
+            overflow-x: auto;
+        }
+
+        .header {
+            background: linear-gradient(90deg, #ff6b35, #f7931e, #ffcc02);
+            padding: 15px 0;
+            text-align: center;
+            box-shadow: 0 4px 20px rgba(255, 107, 53, 0.3);
+        }
+
+        .logo {
+            font-size: 2rem;
+            font-weight: bold;
+            color: #000;
+        }
+
+        .subtitle {
+            font-size: 0.9rem;
+            color: #333;
+            margin-top: 5px;
+        }
+
+        .main-container {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 20px;
+            padding: 20px;
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        .control-panel {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 15px;
+            padding: 20px;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+        }
+
+        .panel-title {
+            font-size: 1.3rem;
+            font-weight: bold;
+            margin-bottom: 20px;
+            text-align: center;
+            background: linear-gradient(45deg, #00d4ff, #00ff88);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        /* System Status */
+        .system-status {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-bottom: 20px;
+            padding: 15px;
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 10px;
+        }
+
+        .status-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .status-label {
+            font-size: 0.9rem;
+            color: #aaa;
+        }
+
+        .status-value {
+            font-weight: bold;
+            font-size: 0.9rem;
+        }
+
+        .status-connected {
+            color: #00ff88;
+        }
+
+        .status-armed {
+            color: #00d4ff;
+        }
+
+        .status-error {
+            color: #ff4757;
+        }
+
+        /* Arming Section */
+        .arm-section {
+            margin-bottom: 20px;
+            text-align: center;
+        }
+
+        .arm-button {
+            width: 100%;
+            padding: 15px;
+            font-size: 1.1rem;
+            font-weight: bold;
+            background: linear-gradient(45deg, #00d4ff, #0099cc);
+            color: white;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(0, 212, 255, 0.3);
+        }
+
+        .arm-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(0, 212, 255, 0.4);
+        }
+
+        .arm-button.armed {
+            background: linear-gradient(45deg, #ff4757, #cc3647);
+            box-shadow: 0 4px 15px rgba(255, 71, 87, 0.3);
+        }
+
+        .arm-button.armed:hover {
+            box-shadow: 0 6px 20px rgba(255, 71, 87, 0.4);
+        }
+
+        /* Individual Motors */
+        .individual-motors {
+            display: grid;
+            gap: 15px;
+        }
+
+        .motor-card {
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 10px;
+            padding: 15px;
+            border: 2px solid transparent;
+            transition: all 0.3s ease;
+        }
+
+        .motor-card:hover {
+            border-color: rgba(0, 212, 255, 0.5);
+            transform: translateY(-2px);
+        }
+
+        .motor-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .motor-label {
+            font-weight: bold;
+            color: #00d4ff;
+        }
+
+        .motor-status {
+            font-size: 0.8rem;
+            font-weight: bold;
+            padding: 4px 8px;
+            border-radius: 5px;
+        }
+
+        .motor-status.running {
+            background: #00ff88;
+            color: #000;
+        }
+
+        .motor-status.off {
+            background: #555;
+            color: #aaa;
+        }
+
+        .motor-controls {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+
+        .motor-btn {
+            background: linear-gradient(45deg, #7c4dff, #5c2fc7);
+            color: white;
+            border: none;
+            padding: 8px 12px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 1rem;
+            transition: all 0.3s ease;
+        }
+
+        .motor-btn:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 10px rgba(124, 77, 255, 0.3);
+        }
+
+        .speed-input {
+            flex: 1;
+            padding: 8px;
+            border: 1px solid #555;
+            border-radius: 5px;
+            background: rgba(0, 0, 0, 0.5);
+            color: #fff;
+            text-align: center;
+        }
+
+        .speed-display {
+            text-align: center;
+            font-size: 0.9rem;
+            color: #00ff88;
+            font-weight: bold;
+        }
+
+        /* Group Controls */
+        .group-control {
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .group-title {
+            font-size: 1.1rem;
+            font-weight: bold;
+            margin-bottom: 15px;
+            text-align: center;
+            color: #00d4ff;
+        }
+
+        .group-speed-control {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+
+        .speed-btn {
+            background: linear-gradient(45deg, #ff6b35, #f7931e);
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 50%;
+            cursor: pointer;
+            font-size: 1.2rem;
+            font-weight: bold;
+            transition: all 0.3s ease;
+        }
+
+        .speed-btn:hover {
+            transform: scale(1.1);
+            box-shadow: 0 4px 15px rgba(255, 107, 53, 0.3);
+        }
+
+        .speed-slider {
+            flex: 1;
+            height: 8px;
+            border-radius: 4px;
+            background: #333;
+            outline: none;
+            -webkit-appearance: none;
+        }
+
+        .speed-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: linear-gradient(45deg, #00d4ff, #00ff88);
+            cursor: pointer;
+            box-shadow: 0 4px 10px rgba(0, 212, 255, 0.3);
+        }
+
+        .speed-value {
+            font-weight: bold;
+            color: #00ff88;
+            min-width: 50px;
+            text-align: center;
+        }
+
+        .group-buttons {
+            display: flex;
+            gap: 10px;
+        }
+
+        .group-btn {
+            flex: 1;
+            padding: 12px;
+            border: none;
+            border-radius: 8px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .start-btn {
+            background: linear-gradient(45deg, #00ff88, #00cc6a);
+            color: #000;
+        }
+
+        .start-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(0, 255, 136, 0.3);
+        }
+
+        .stop-btn {
+            background: linear-gradient(45deg, #ff4757, #cc3647);
+            color: white;
+        }
+
+        .stop-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(255, 71, 87, 0.3);
+        }
+
+        /* System Controls */
+        .system-controls {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+
+        .system-btn {
+            padding: 12px;
+            border: none;
+            border-radius: 8px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-size: 0.9rem;
+        }
+
+        .relay-brake-on {
+            background: linear-gradient(45deg, #00ff88, #00cc6a);
+            color: #000;
+        }
+
+        .relay-brake-off {
+            background: linear-gradient(45deg, #ffaa00, #ff8800);
+            color: #000;
+        }
+
+        .emergency-btn {
+            background: linear-gradient(45deg, #ff4757, #cc3647);
+            color: white;
+            grid-column: span 2;
+            font-size: 1rem;
+            padding: 15px;
+        }
+
+        .system-btn:hover {
+            transform: translateY(-2px);
+        }
+
+        /* Info Panel */
+        .info-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        .info-item {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 15px;
+            border-radius: 8px;
+            text-align: center;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .info-label {
+            font-size: 0.9rem;
+            color: #aaa;
+            margin-bottom: 8px;
+        }
+
+        .info-value {
+            font-size: 1.3rem;
+            font-weight: bold;
+        }
+
+        /* Connection Status */
+        .connection-status {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 15px;
+            border-radius: 10px;
+            margin-bottom: 15px;
+        }
+
+        .connection-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+
+        .connection-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #ff4757;
+            animation: pulse 2s infinite;
+        }
+
+        .connection-dot.connected {
+            background: #00ff88;
+        }
+
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+
+        /* Sensor Data Grid */
+        .sensor-data-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            margin-bottom: 15px;
+        }
+
+        .sensor-item {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 8px;
+            border-radius: 6px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .sensor-label {
+            font-size: 0.8rem;
+            color: #aaa;
+        }
+
+        .sensor-value {
+            font-weight: bold;
+            color: #00ff88;
+            font-size: 0.9rem;
+        }
+
+        /* Command Log */
+        .command-log {
+            background: rgba(0, 0, 0, 0.5);
+            padding: 10px;
+            border-radius: 8px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.8rem;
+            max-height: 150px;
+            overflow-y: auto;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            line-height: 1.4;
+        }
+
+        /* Emergency Stop */
+        .emergency-stop {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            width: 80px;
+            height: 80px;
+            background: linear-gradient(45deg, #ff4757, #cc3647);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            font-weight: bold;
+            color: white;
+            font-size: 0.9rem;
+            text-align: center;
+            line-height: 1.2;
+            z-index: 1000;
+            box-shadow: 0 8px 25px rgba(255, 71, 87, 0.4);
+            animation: emergencyPulse 3s infinite;
+        }
+
+        @keyframes emergencyPulse {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+        }
+
+        .emergency-stop:hover {
+            transform: scale(1.1);
+            box-shadow: 0 12px 30px rgba(255, 71, 87, 0.6);
+        }
+
+        /* Notification */
+        .notification {
+            position: fixed;
+            top: 120px;
+            right: 20px;
+            background: rgba(0, 0, 0, 0.9);
+            color: white;
+            padding: 15px 20px;
+            border-radius: 10px;
+            z-index: 1000;
+            transform: translateX(400px);
+            transition: all 0.3s ease;
+            max-width: 300px;
+            border-left: 4px solid #00d4ff;
+        }
+
+        .notification.show {
+            transform: translateX(0);
+        }
+
+        .notification.success {
+            border-left-color: #00ff88;
+        }
+
+        .notification.error {
+            border-left-color: #ff4757;
+        }
+
+        .notification.warning {
+            border-left-color: #ffaa00;
+        }
+
+        /* Responsive */
+        @media (max-width: 1200px) {
+            .main-container {
+                grid-template-columns: 1fr 1fr;
+            }
+        }
+
+        @media (max-width: 768px) {
+            .main-container {
+                grid-template-columns: 1fr;
+                gap: 15px;
+                padding: 15px;
+            }
+            
+            .header .logo {
+                font-size: 1.5rem;
+            }
+            
+            .emergency-stop {
+                width: 60px;
+                height: 60px;
+                font-size: 0.8rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- Header -->
+    <div class="header">
+        <div class="logo">SPECTRALOOP FINAL v3.1 - MOTOR GROUPS FIXED</div>
+        <div class="subtitle">Production Motor Control System - Levitation(1-4) Thrust(5-6)</div>
+    </div>
+
+    <!-- Main Container -->
+    <div class="main-container">
+        <!-- Left Panel - Individual Motor Controls -->
+        <div class="control-panel">
+            <div class="panel-title">🎛️ İndividüel Motor Kontrolleri</div>
+            
+            <!-- System Status -->
+            <div class="system-status">
+                <div class="status-item">
+                    <div class="status-label">Arduino</div>
+                    <div class="status-value status-connected" id="arduino-status">Bağlı</div>
+                </div>
+                <div class="status-item">
+                    <div class="status-label">Sistem</div>
+                    <div class="status-value status-armed" id="system-status">Hazır</div>
+                </div>
+                <div class="status-item">
+                    <div class="status-label">Aktif</div>
+                    <div class="status-value" id="motor-count">0/6</div>
+                </div>
+                <div class="status-item">
+                    <div class="status-label">Röle</div>
+                    <div class="status-value" id="relay-status">Pasif</div>
+                </div>
+            </div>
+
+            <!-- Arming Section -->
+            <div class="arm-section">
+                <button class="arm-button" id="arm-button" onclick="toggleArm()">
+                    🔧 SİSTEMİ HAZIRLA
+                </button>
+            </div>
+
+            <!-- Individual Motor Cards - FIXED LABELS -->
+            <div class="individual-motors">
+                <div class="motor-card" data-motor="1">
+                    <div class="motor-header">
+                        <span class="motor-label">Motor 1 (Lev)</span>
+                        <span class="motor-status off" id="motor1-status">OFF</span>
+                    </div>
+                    <div class="motor-controls">
+                        <button class="motor-btn" onclick="startMotor(1)" id="motor1-start">▶</button>
+                        <button class="motor-btn" onclick="stopMotor(1)" id="motor1-stop">⏹</button>
+                        <input type="number" class="speed-input" id="motor1-speed-input" min="0" max="100" value="50" onchange="setMotorSpeed(1, this.value)">
+                    </div>
+                    <div class="speed-display" id="motor1-speed-display">Hız: 0%</div>
+                </div>
+
+                <div class="motor-card" data-motor="2">
+                    <div class="motor-header">
+                        <span class="motor-label">Motor 2 (Lev)</span>
+                        <span class="motor-status off" id="motor2-status">OFF</span>
+                    </div>
+                    <div class="motor-controls">
+                        <button class="motor-btn" onclick="startMotor(2)" id="motor2-start">▶</button>
+                        <button class="motor-btn" onclick="stopMotor(2)" id="motor2-stop">⏹</button>
+                        <input type="number" class="speed-input" id="motor2-speed-input" min="0" max="100" value="50" onchange="setMotorSpeed(2, this.value)">
+                    </div>
+                    <div class="speed-display" id="motor2-speed-display">Hız: 0%</div>
+                </div>
+
+                <div class="motor-card" data-motor="3">
+                    <div class="motor-header">
+                        <span class="motor-label">Motor 3 (Lev)</span>
+                        <span class="motor-status off" id="motor3-status">OFF</span>
+                    </div>
+                    <div class="motor-controls">
+                        <button class="motor-btn" onclick="startMotor(3)" id="motor3-start">▶</button>
+                        <button class="motor-btn" onclick="stopMotor(3)" id="motor3-stop">⏹</button>
+                        <input type="number" class="speed-input" id="motor3-speed-input" min="0" max="100" value="50" onchange="setMotorSpeed(3, this.value)">
+                    </div>
+                    <div class="speed-display" id="motor3-speed-display">Hız: 0%</div>
+                </div>
+
+                <div class="motor-card" data-motor="4">
+                    <div class="motor-header">
+                        <span class="motor-label">Motor 4 (Lev)</span>
+                        <span class="motor-status off" id="motor4-status">OFF</span>
+                    </div>
+                    <div class="motor-controls">
+                        <button class="motor-btn" onclick="startMotor(4)" id="motor4-start">▶</button>
+                        <button class="motor-btn" onclick="stopMotor(4)" id="motor4-stop">⏹</button>
+                        <input type="number" class="speed-input" id="motor4-speed-input" min="0" max="100" value="50" onchange="setMotorSpeed(4, this.value)">
+                    </div>
+                    <div class="speed-display" id="motor4-speed-display">Hız: 0%</div>
+                </div>
+
+                <div class="motor-card" data-motor="5">
+                    <div class="motor-header">
+                        <span class="motor-label">Motor 5 (Thr)</span>
+                        <span class="motor-status off" id="motor5-status">OFF</span>
+                    </div>
+                    <div class="motor-controls">
+                        <button class="motor-btn" onclick="startMotor(5)" id="motor5-start">▶</button>
+                        <button class="motor-btn" onclick="stopMotor(5)" id="motor5-stop">⏹</button>
+                        <input type="number" class="speed-input" id="motor5-speed-input" min="0" max="100" value="50" onchange="setMotorSpeed(5, this.value)">
+                    </div>
+                    <div class="speed-display" id="motor5-speed-display">Hız: 0%</div>
+                </div>
+
+                <div class="motor-card" data-motor="6">
+                    <div class="motor-header">
+                        <span class="motor-label">Motor 6 (Thr)</span>
+                        <span class="motor-status off" id="motor6-status">OFF</span>
+                    </div>
+                    <div class="motor-controls">
+                        <button class="motor-btn" onclick="startMotor(6)" id="motor6-start">▶</button>
+                        <button class="motor-btn" onclick="stopMotor(6)" id="motor6-stop">⏹</button>
+                        <input type="number" class="speed-input" id="motor6-speed-input" min="0" max="100" value="50" onchange="setMotorSpeed(6, this.value)">
+                    </div>
+                    <div class="speed-display" id="motor6-speed-display">Hız: 0%</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Middle Panel - Group Controls -->
+        <div class="control-panel">
+            <div class="panel-title">🚀 Grup Kontrolleri</div>
+            
+            <!-- Levitation Group -->
+            <div class="group-control">
+                <div class="group-title">🔮 Levitasyon Grubu (1,2,3,4)</div>
+                <div class="group-speed-control">
+                    <button class="speed-btn" onclick="adjustGroupSpeed('levitation', -10)">−</button>
+                    <input type="range" class="speed-slider" id="levitation-slider" 
+                           min="0" max="100" value="0" 
+                           oninput="setGroupSpeed('levitation', this.value)">
+                    <button class="speed-btn" onclick="adjustGroupSpeed('levitation', 10)">+</button>
+                    <span class="speed-value" id="levitation-speed">0%</span>
+                </div>
+                <div class="group-buttons">
+                    <button class="group-btn start-btn" onclick="startGroup('levitation')">BAŞLAT</button>
+                    <button class="group-btn stop-btn" onclick="stopGroup('levitation')">DURDUR</button>
+                </div>
+            </div>
+
+            <!-- Thrust Group -->
+            <div class="group-control">
+                <div class="group-title">⚡ İtki Grubu (5,6)</div>
+                <div class="group-speed-control">
+                    <button class="speed-btn" onclick="adjustGroupSpeed('thrust', -10)">−</button>
+                    <input type="range" class="speed-slider" id="thrust-slider" 
+                           min="0" max="100" value="0" 
+                           oninput="setGroupSpeed('thrust', this.value)">
+                    <button class="speed-btn" onclick="adjustGroupSpeed('thrust', 10)">+</button>
+                    <span class="speed-value" id="thrust-speed">0%</span>
+                </div>
+                <div class="group-buttons">
+                    <button class="group-btn start-btn" onclick="startGroup('thrust')">BAŞLAT</button>
+                    <button class="group-btn stop-btn" onclick="stopGroup('thrust')">DURDUR</button>
+                </div>
+            </div>
+
+            <!-- System Controls -->
+            <div class="system-controls">
+                <button class="system-btn relay-brake-on" onclick="controlRelayBrake('on')">🔌 RÖLE AKTİF</button>
+                <button class="system-btn relay-brake-off" onclick="controlRelayBrake('off')">⚡ RÖLE PASİF</button>
+                <button class="system-btn" onclick="controlBrake('on')" style="background: linear-gradient(45deg, #ff6b35, #f7931e);">🔒 BRAKE ON</button>
+                <button class="system-btn" onclick="controlBrake('off')" style="background: linear-gradient(45deg, #00ff88, #00cc6a);">🔓 BRAKE OFF</button>
+                <button class="system-btn emergency-btn" onclick="emergencyStop()">🚨 ACİL DURDURMA</button>
+            </div>
+        </div>
+
+        <!-- Right Panel - System Info -->
+        <div class="control-panel">
+            <div class="panel-title">📊 Sistem Bilgileri</div>
+            
+            <!-- Performance Info -->
+            <div class="info-grid">
+                <div class="info-item">
+                    <div class="info-label">Toplam RPM</div>
+                    <div class="info-value" style="color: #00d4ff;" id="total-rpm">0</div>
+                </div>
+                <div class="info-item">
+                    <div class="info-label">Güç Tüketimi</div>
+                    <div class="info-value" style="color: #00ff88;" id="power-usage">0W</div>
+                </div>
+                <div class="info-item">
+                    <div class="info-label">Sıcaklık</div>
+                    <div class="info-value" style="color: #ffaa00;" id="temperature">25°C</div>
+                </div>
+                <div class="info-item">
+                    <div class="info-label">Röle Durumu</div>
+                    <div class="info-value" style="color: #ff0066;" id="relay-brake-status">Pasif</div>
+                </div>
+            </div>
+
+            <!-- Motor Speed Summary -->
+            <div style="margin-bottom: 15px;">
+                <h4 style="color: #00d4ff; margin-bottom: 10px; text-align: center;">Motor Hızları</h4>
+                <div class="info-grid">
+                    <div class="info-item">
+                        <div class="info-label">Lev Grubu Ort.</div>
+                        <div class="info-value" style="color: #00ff88;" id="lev-avg-speed">0%</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">İtki Grubu Ort.</div>
+                        <div class="info-value" style="color: #00ff88;" id="thr-avg-speed">0%</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Connection Status -->
+            <div class="connection-status">
+                <h4 style="color: #00d4ff; margin-bottom: 10px; text-align: center;">Bağlantı Durumu</h4>
+                <div class="connection-item">
+                    <span style="color: #aaa;">Backend:</span>
+                    <div class="connection-dot" id="backend-status"></div>
+                </div>
+                <div class="connection-item">
+                    <span style="color: #aaa;">Arduino:</span>
+                    <div class="connection-dot" id="arduino-connection-status"></div>
+                </div>
+                <div class="connection-item">
+                    <span style="color: #aaa;">Son Güncelleme:</span>
+                    <span id="last-update" style="color: #aaa; font-size: 0.8rem;">--:--:--</span>
+                </div>
+                <div style="margin-top: 10px; text-align: center;">
+                    <button class="group-btn" style="width: 100%; background: linear-gradient(45deg, #7c4dff, #5c2fc7); margin-bottom: 8px;" onclick="testConnection()">
+                        🔍 BAĞLANTI TESTİ
+                    </button>
+                    <button class="group-btn" style="width: 100%; background: linear-gradient(45deg, #ff6b35, #f7931e);" onclick="reconnectArduino()">
+                        🔄 YENİDEN BAĞLAN
+                    </button>
+                </div>
+            </div>
+
+            <!-- MPU6050 Sensor Data Panel -->
+            <div style="margin-top: 15px;">
+                <h4 style="color: #00d4ff; margin-bottom: 10px; text-align: center;">🎯 MPU6050 Sensör Verileri</h4>
+                <div class="sensor-data-grid">
+                    <div class="sensor-item">
+                        <span class="sensor-label">Accel X:</span>
+                        <span class="sensor-value" id="accel-x">0.00</span>
+                    </div>
+                    <div class="sensor-item">
+                        <span class="sensor-label">Accel Y:</span>
+                        <span class="sensor-value" id="accel-y">0.00</span>
+                    </div>
+                    <div class="sensor-item">
+                        <span class="sensor-label">Accel Z:</span>
+                        <span class="sensor-value" id="accel-z">0.00</span>
+                    </div>
+                    <div class="sensor-item">
+                        <span class="sensor-label">Gyro X:</span>
+                        <span class="sensor-value" id="gyro-x">0.00</span>
+                    </div>
+                    <div class="sensor-item">
+                        <span class="sensor-label">Gyro Y:</span>
+                        <span class="sensor-value" id="gyro-y">0.00</span>
+                    </div>
+                    <div class="sensor-item">
+                        <span class="sensor-label">Gyro Z:</span>
+                        <span class="sensor-value" id="gyro-z">0.00</span>
+                    </div>
+                    <div class="sensor-item">
+                        <span class="sensor-label">Sıcaklık:</span>
+                        <span class="sensor-value" id="sensor-temperature">25.0°C</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Command Log -->
+            <div style="margin-top: 15px;">
+                <h4 style="color: #00d4ff; margin-bottom: 10px; text-align: center;">Komut Geçmişi</h4>
+                <div id="command-log" class="command-log">
+                    Sistem başlatılıyor...
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Emergency Stop Button -->
+    <div class="emergency-stop" onclick="emergencyStop()">
+        🚨<br>STOP
+    </div>
+
+    <!-- Notification -->
+    <div id="notification" class="notification"></div>
+
+    <script>
+        // Configuration - BACKEND URL
+        const BACKEND_URL = 'http://172.20.10.4:5001';
+        
+        // System State - FIXED MOTOR GROUPS
+        let systemArmed = false;
+        let motorStates = {1: false, 2: false, 3: false, 4: false, 5: false, 6: false};
+        let individualMotorSpeeds = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0};
+        let groupSpeeds = {levitation: 0, thrust: 0};
+        let relayBrakeActive = false;
+        let connectionStatus = {backend: false, arduino: false};
+        
+        // Enhanced connection tracking
+        let requestCount = 0;
+        let errorCount = 0;
+        let lastRequestTime = 0;
+        let consecutiveErrors = 0;
+        const REQUEST_THROTTLE = 50;
+        const commandLog = [];
+        const MAX_RETRIES = 3;
+
+        // Utility Functions
+        function logCommand(command, success = true) {
+            const timestamp = new Date().toLocaleTimeString();
+            const status = success ? '✅' : '❌';
+            const logEntry = `${timestamp} ${status} ${command}`;
+            
+            commandLog.unshift(logEntry);
+            if (commandLog.length > 20) commandLog.pop();
+            
+            const logElement = document.getElementById('command-log');
+            if (logElement) {
+                logElement.innerHTML = commandLog.join('<br>');
+                logElement.scrollTop = 0;
+            }
+        }
+
+        function throttleRequest(callback) {
+            const now = Date.now();
+            if (now - lastRequestTime < REQUEST_THROTTLE) {
+                setTimeout(() => throttleRequest(callback), REQUEST_THROTTLE);
+                return;
+            }
+            lastRequestTime = now;
+            callback();
+        }
+
+        async function makeRequest(url, options = {}, timeout = 8000, retries = MAX_RETRIES) {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), timeout);
+            
+            for (let attempt = 0; attempt < retries; attempt++) {
+                try {
+                    console.log(`Making request to ${url} (attempt ${attempt + 1}/${retries})`);
+                    
+                    const response = await fetch(url, {
+                        ...options,
+                        signal: controller.signal,
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Accept': 'application/json',
+                            ...options.headers
+                        },
+                        mode: 'cors',
+                        credentials: 'omit'
+                    });
+                    
+                    clearTimeout(timeoutId);
+                    
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                    }
+                    
+                    requestCount++;
+                    consecutiveErrors = 0;
+                    updateConnectionStatus('backend', true);
+                    console.log(`Request successful: ${url}`);
+                    return response;
+                    
+                } catch (error) {
+                    console.warn(`Request failed (attempt ${attempt + 1}): ${error.message}`);
+                    
+                    if (attempt === retries - 1) {
+                        clearTimeout(timeoutId);
+                        errorCount++;
+                        consecutiveErrors++;
+                        updateConnectionStatus('backend', false);
+                        
+                        if (error.name === 'AbortError') {
+                            throw new Error('Request timed out');
+                        }
+                        throw error;
+                    }
+                    
+                    await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
+                }
+            }
+        }
+
+        // Motor Control Functions
+        async function startMotor(motorNum) {
+            if (!systemArmed) {
+                showNotification('⚠️ Önce sistemi hazırlamanız gerekiyor!', 'warning');
+                return;
+            }
+
+            if (!relayBrakeActive) {
+                showNotification(`⚠️ Röle pasif! Önce röleyi aktif yapın.`, 'warning');
+                return;
+            }
+
+            throttleRequest(async () => {
+                try {
+                    const speed = parseInt(document.getElementById(`motor${motorNum}-speed-input`).value) || 50;
+                    
+                    const response = await makeRequest(`${BACKEND_URL}/api/motor/${motorNum}/start`, {
+                        method: 'POST',
+                        body: JSON.stringify({speed: speed})
+                    });
+
+                    if (response.ok) {
+                        const data = await response.json();
+                        motorStates[motorNum] = true;
+                        individualMotorSpeeds[motorNum] = speed;
+                        updateMotorStatus(motorNum, true, speed);
+                        updateMotorCount();
+                        logCommand(`Motor ${motorNum} başlatıldı (${speed}%)`);
+                        showNotification(`🎯 Motor ${motorNum} başlatıldı!`, 'success');
+                    }
+
+                } catch (error) {
+                    logCommand(`Motor ${motorNum} başlatma hatası`, false);
+                    showNotification(`❌ Motor ${motorNum} başlatılamadı: ${error.message}`, 'error');
+                    console.error('Motor start error:', error);
+                }
+            });
+        }
+
+        async function stopMotor(motorNum) {
+            throttleRequest(async () => {
+                try {
+                    const response = await makeRequest(`${BACKEND_URL}/api/motor/${motorNum}/stop`, {
+                        method: 'POST'
+                    });
+
+                    if (response.ok) {
+                        motorStates[motorNum] = false;
+                        individualMotorSpeeds[motorNum] = 0;
+                        updateMotorStatus(motorNum, false, 0);
+                        updateMotorCount();
+                        logCommand(`Motor ${motorNum} durduruldu`);
+                        showNotification(`🎯 Motor ${motorNum} durduruldu!`, 'success');
+                    }
+
+                } catch (error) {
+                    logCommand(`Motor ${motorNum} durdurma hatası`, false);
+                    showNotification(`❌ Motor ${motorNum} durdurulamadı: ${error.message}`, 'error');
+                    console.error('Motor stop error:', error);
+                }
+            });
+        }
+
+        async function setMotorSpeed(motorNum, speed) {
+            if (!systemArmed) {
+                showNotification('⚠️ Sistem armed değil!', 'warning');
+                return;
+            }
+
+            if (!relayBrakeActive) {
+                showNotification(`⚠️ Röle pasif! Önce röleyi aktif yapın.`, 'warning');
+                return;
+            }
+
+            speed = parseInt(speed);
+            if (speed < 0 || speed > 100) {
+                showNotification('⚠️ Hız 0-100 arasında olmalı!', 'warning');
+                return;
+            }
+
+            throttleRequest(async () => {
+                try {
+                    const response = await makeRequest(`${BACKEND_URL}/api/motor/${motorNum}/speed`, {
+                        method: 'POST',
+                        body: JSON.stringify({speed: speed})
+                    });
+
+                    if (response.ok) {
+                        individualMotorSpeeds[motorNum] = speed;
+                        updateMotorSpeedDisplay(motorNum, speed);
+                        logCommand(`Motor ${motorNum} hızı ${speed}%`);
+                    }
+
+                } catch (error) {
+                    logCommand(`Motor ${motorNum} hız hatası`, false);
+                    showNotification(`❌ Motor ${motorNum} hız ayarlanamadı`, 'error');
+                    console.error('Motor speed error:', error);
+                }
+            });
+        }
+
+        // Group Control Functions - FIXED MOTOR GROUPS
+        async function startGroup(groupType) {
+            if (!systemArmed) {
+                showNotification('⚠️ Önce sistemi hazırlamanız gerekiyor!', 'warning');
+                return;
+            }
+
+            if (!relayBrakeActive) {
+                showNotification(`⚠️ Röle pasif! Önce röleyi aktif yapın.`, 'warning');
+                return;
+            }
+
+            throttleRequest(async () => {
+                try {
+                    const speed = groupSpeeds[groupType] || 50;
+                    
+                    const response = await makeRequest(`${BACKEND_URL}/api/${groupType}/start`, {
+                        method: 'POST',
+                        body: JSON.stringify({speed: speed})
+                    });
+
+                    if (response.ok) {
+                        const data = await response.json();
+                        groupSpeeds[groupType] = speed;
+                        
+                        // FIXED: Correct motor ranges
+                        const motorRange = groupType === 'levitation' ? [1,2,3,4] : [5,6];
+                        motorRange.forEach(motorNum => {
+                            motorStates[motorNum] = true;
+                            individualMotorSpeeds[motorNum] = speed;
+                            updateMotorStatus(motorNum, true, speed);
+                            document.getElementById(`motor${motorNum}-speed-input`).value = speed;
+                        });
+                        
+                        updateGroupSpeedDisplay(groupType, speed);
+                        updateMotorCount();
+                        logCommand(`${groupType} grubu başlatıldı (${speed}%) - Motorlar: ${motorRange.join(',')}`);
+                        showNotification(`🚀 ${groupType.charAt(0).toUpperCase() + groupType.slice(1)} grubu başlatıldı! (${motorRange.join(',')})`, 'success');
+                    }
+
+                } catch (error) {
+                    logCommand(`${groupType} başlatma hatası`, false);
+                    showNotification(`❌ ${groupType} grubu başlatılamadı: ${error.message}`, 'error');
+                    console.error('Group start error:', error);
+                }
+            });
+        }
+
+        async function stopGroup(groupType) {
+            throttleRequest(async () => {
+                try {
+                    const response = await makeRequest(`${BACKEND_URL}/api/${groupType}/stop`, {
+                        method: 'POST'
+                    });
+
+                    if (response.ok) {
+                        groupSpeeds[groupType] = 0;
+                        
+                        // FIXED: Correct motor ranges
+                        const motorRange = groupType === 'levitation' ? [1,2,3,4] : [5,6];
+                        motorRange.forEach(motorNum => {
+                            motorStates[motorNum] = false;
+                            individualMotorSpeeds[motorNum] = 0;
+                            updateMotorStatus(motorNum, false, 0);
+                        });
+                        
+                        updateGroupSpeedDisplay(groupType, 0);
+                        updateMotorCount();
+                        logCommand(`${groupType} grubu durduruldu - Motorlar: ${motorRange.join(',')}`);
+                        showNotification(`🛑 ${groupType.charAt(0).toUpperCase() + groupType.slice(1)} grubu durduruldu! (${motorRange.join(',')})`, 'success');
+                    }
+
+                } catch (error) {
+                    logCommand(`${groupType} durdurma hatası`, false);
+                    showNotification(`❌ ${groupType} grubu durdurulamadı: ${error.message}`, 'error');
+                    console.error('Group stop error:', error);
+                }
+            });
+        }
+
+        function setGroupSpeed(groupType, speed) {
+            speed = parseInt(speed);
+            groupSpeeds[groupType] = speed;
+            updateGroupSpeedDisplay(groupType, speed);
+            
+            clearTimeout(window[`${groupType}SpeedTimeout`]);
+            window[`${groupType}SpeedTimeout`] = setTimeout(() => {
+                sendGroupSpeed(groupType, speed);
+            }, 300);
+        }
+
+        function adjustGroupSpeed(groupType, change) {
+            const currentSpeed = groupSpeeds[groupType];
+            const newSpeed = Math.max(0, Math.min(100, currentSpeed + change));
+            setGroupSpeed(groupType, newSpeed);
+            document.getElementById(`${groupType}-slider`).value = newSpeed;
+        }
+
+        async function sendGroupSpeed(groupType, speed) {
+            if (!systemArmed || !relayBrakeActive) return;
+
+            throttleRequest(async () => {
+                try {
+                    const response = await makeRequest(`${BACKEND_URL}/api/${groupType}/speed`, {
+                        method: 'POST',
+                        body: JSON.stringify({speed: speed})
+                    });
+
+                    if (response.ok) {
+                        // FIXED: Correct motor ranges
+                        const motorRange = groupType === 'levitation' ? [1,2,3,4] : [5,6];
+                        motorRange.forEach(motorNum => {
+                            if (motorStates[motorNum]) {
+                                individualMotorSpeeds[motorNum] = speed;
+                                updateMotorSpeedDisplay(motorNum, speed);
+                                document.getElementById(`motor${motorNum}-speed-input`).value = speed;
+                            }
+                        });
+                        
+                        logCommand(`${groupType} grubu hızı ${speed}%`);
+                    }
+
+                } catch (error) {
+                    logCommand(`${groupType} hız hatası`, false);
+                    console.error('Group speed error:', error);
+                }
+            });
+        }
+
+        // System Control Functions
+        async function toggleArm() {
+            throttleRequest(async () => {
+                try {
+                    const action = systemArmed ? 'disarm' : 'arm';
+                    console.log(`Attempting to ${action} system`);
+                    
+                    // Eğer sistem arm ediliyorsa ve röle pasifse, önce röleyi aktif yap
+                    if (action === 'arm' && !relayBrakeActive) {
+                        showNotification('🔧 Röle aktif hale getiriliyor, sistem hazırlanıyor...', 'warning');
+                        
+                        // Önce röleyi aktif yap
+                        const relayResponse = await makeRequest(`${BACKEND_URL}/api/relay-brake/on`, {
+                            method: 'POST'
+                        });
+                        
+                        if (relayResponse.ok) {
+                            relayBrakeActive = true;
+                            updateRelayBrakeStatus();
+                            logCommand('Röle otomatik aktif yapıldı');
+                            
+                            // Kısa bir bekleme
+                            await new Promise(resolve => setTimeout(resolve, 500));
+                        } else {
+                            throw new Error('Röle aktif yapılamadı');
+                        }
+                    }
+                    
+                    const response = await makeRequest(`${BACKEND_URL}/api/system/${action}`, {
+                        method: 'POST'
+                    });
+
+                    if (response.ok) {
+                        const data = await response.json();
+                        systemArmed = !systemArmed;
+                        updateArmButton();
+                        
+                        if (!systemArmed) {
+                            Object.keys(motorStates).forEach(motorNum => {
+                                motorStates[motorNum] = false;
+                                individualMotorSpeeds[motorNum] = 0;
+                                updateMotorStatus(motorNum, false, 0);
+                            });
+                            groupSpeeds.levitation = 0;
+                            groupSpeeds.thrust = 0;
+                            updateGroupSpeedDisplay('levitation', 0);
+                            updateGroupSpeedDisplay('thrust', 0);
+                            updateMotorCount();
+                        }
+                        
+                        logCommand(`Sistem ${action === 'arm' ? 'hazırlandı' : 'devre dışı'}`);
+                        showNotification(`🎯 Sistem ${action === 'arm' ? 'hazırlandı' : 'devre dışı bırakıldı'}!`, 'success');
+                    }
+
+                } catch (error) {
+                    logCommand('Arm/Disarm hatası', false);
+                    showNotification(`❌ Sistem hatası: ${error.message}`, 'error');
+                    console.error('Arm/Disarm error:', error);
+                }
+            });
+        }
+
+        // Relay Brake Control
+        async function controlRelayBrake(action) {
+            throttleRequest(async () => {
+                try {
+                    console.log(`Attempting relay brake ${action}`);
+                    
+                    const response = await makeRequest(`${BACKEND_URL}/api/relay-brake/${action}`, {
+                        method: 'POST'
+                    });
+
+                    if (response.ok) {
+                        const data = await response.json();
+                        relayBrakeActive = (action === 'on');
+                        updateRelayBrakeStatus();
+                        
+                        // Röle pasif olduğunda motorları durdur
+                        if (!relayBrakeActive) {
+                            Object.keys(motorStates).forEach(motorNum => {
+                                motorStates[motorNum] = false;
+                                individualMotorSpeeds[motorNum] = 0;
+                                updateMotorStatus(motorNum, false, 0);
+                            });
+                            groupSpeeds.levitation = 0;
+                            groupSpeeds.thrust = 0;
+                            updateGroupSpeedDisplay('levitation', 0);
+                            updateGroupSpeedDisplay('thrust', 0);
+                            updateMotorCount();
+                        }
+                        
+                        const status = relayBrakeActive ? 'aktif' : 'pasif';
+                        logCommand(`Röle ${status}`);
+                        showNotification(`🔌 Röle sistem ${status}!`, relayBrakeActive ? 'success' : 'warning');
+                    }
+
+                } catch (error) {
+                    logCommand('Röle kontrol hatası', false);
+                    showNotification(`❌ Röle kontrol hatası: ${error.message}`, 'error');
+                    console.error('Relay brake error:', error);
+                }
+            });
+        }
+
+        // Brake Control
+        async function controlBrake(action) {
+            throttleRequest(async () => {
+                try {
+                    console.log(`Attempting brake ${action}`);
+                    
+                    const response = await makeRequest(`${BACKEND_URL}/api/brake/${action}`, {
+                        method: 'POST'
+                    });
+
+                    if (response.ok) {
+                        const data = await response.json();
+                        logCommand(`Software brake ${action === 'on' ? 'aktif' : 'pasif'}`);
+                        showNotification(`🔒 Software brake ${action === 'on' ? 'aktif' : 'pasif'}!`, 'success');
+                    }
+
+                } catch (error) {
+                    logCommand('Brake kontrol hatası', false);
+                    showNotification(`❌ Brake kontrol hatası: ${error.message}`, 'error');
+                    console.error('Brake control error:', error);
+                }
+            });
+        }
+
+        // Emergency Stop
+        async function emergencyStop() {
+            try {
+                // Immediate local emergency actions
+                systemArmed = false;
+                relayBrakeActive = false;
+                Object.keys(motorStates).forEach(motorNum => {
+                    motorStates[motorNum] = false;
+                    individualMotorSpeeds[motorNum] = 0;
+                    updateMotorStatus(motorNum, false, 0);
+                });
+                groupSpeeds.levitation = 0;
+                groupSpeeds.thrust = 0;
+                updateGroupSpeedDisplay('levitation', 0);
+                updateGroupSpeedDisplay('thrust', 0);
+                updateMotorCount();
+                updateArmButton();
+                updateRelayBrakeStatus();
+
+                // Send emergency stop to backend
+                const response = await makeRequest(`${BACKEND_URL}/api/emergency-stop`, {
+                    method: 'POST'
+                });
+
+                logCommand('ACİL DURDURMA AKTİF - Röle pasif!');
+                showNotification(`🚨 ACİL DURDURMA! Tüm sistemler durduruldu, röle pasif!`, 'error');
+
+            } catch (error) {
+                logCommand('Acil durdurma hatası', false);
+                showNotification(`⚠️ Acil durdurma sinyali gönderilemedi!`, 'warning');
+                console.error('Emergency stop error:', error);
+            }
+        }
+
+        // Connection Testing
+        async function testConnection() {
+            try {
+                showNotification('🔍 Bağlantı test ediliyor...', 'warning');
+                
+                const response = await makeRequest(`${BACKEND_URL}/api/test-connection`, {
+                    method: 'GET'
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    logCommand('Bağlantı testi başarılı');
+                    showNotification('✅ Bağlantı testi başarılı!', 'success');
+                    updateConnectionStatus('backend', true);
+                    updateConnectionStatus('arduino', data.status === 'success');
+                } else {
+                    throw new Error('Test failed');
+                }
+
+            } catch (error) {
+                logCommand('Bağlantı testi başarısız', false);
+                showNotification(`❌ Bağlantı testi başarısız: ${error.message}`, 'error');
+                updateConnectionStatus('backend', false);
+                updateConnectionStatus('arduino', false);
+            }
+        }
+
+        // Reconnect Arduino
+        async function reconnectArduino() {
+            try {
+                showNotification('🔄 Arduino yeniden bağlanıyor...', 'warning');
+                
+                const response = await makeRequest(`${BACKEND_URL}/api/reconnect`, {
+                    method: 'POST'
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    logCommand('Arduino yeniden bağlandı');
+                    showNotification('✅ Arduino yeniden bağlandı!', 'success');
+                    setTimeout(pollStatus, 1000);
+                } else {
+                    throw new Error('Reconnection failed');
+                }
+
+            } catch (error) {
+                logCommand('Arduino yeniden bağlanma hatası', false);
+                showNotification(`❌ Arduino yeniden bağlanamadı: ${error.message}`, 'error');
+            }
+        }
+
+        // Sensor Data Update
+        async function updateSensorData() {
+            try {
+                const response = await makeRequest(`${BACKEND_URL}/api/sensor-data`, {
+                    method: 'GET'
+                }, 3000, 1);
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data.available) {
+                        document.getElementById('accel-x').textContent = data.acceleration.x.toFixed(2);
+                        document.getElementById('accel-y').textContent = data.acceleration.y.toFixed(2);
+                        document.getElementById('accel-z').textContent = data.acceleration.z.toFixed(2);
+                        document.getElementById('gyro-x').textContent = data.gyroscope.x.toFixed(2);
+                        document.getElementById('gyro-y').textContent = data.gyroscope.y.toFixed(2);
+                        document.getElementById('gyro-z').textContent = data.gyroscope.z.toFixed(2);
+                        document.getElementById('sensor-temperature').textContent = `${data.temperature.toFixed(1)}°C`;
+                    }
+                }
+            } catch (error) {
+                console.debug('Sensor data update error:', error.message);
+            }
+        }
+
+        // Status Update Functions
+        function updateMotorStatus(motorNum, running, speed) {
+            const statusElement = document.getElementById(`motor${motorNum}-status`);
+            const speedDisplay = document.getElementById(`motor${motorNum}-speed-display`);
+            
+            if (statusElement) {
+                statusElement.textContent = running ? 'ON' : 'OFF';
+                statusElement.className = running ? 'motor-status running' : 'motor-status off';
+            }
+            
+            if (speedDisplay) {
+                speedDisplay.textContent = `Hız: ${speed}%`;
+            }
+        }
+
+        function updateMotorSpeedDisplay(motorNum, speed) {
+            const speedDisplay = document.getElementById(`motor${motorNum}-speed-display`);
+            if (speedDisplay) {
+                speedDisplay.textContent = `Hız: ${speed}%`;
+            }
+        }
+
+        function updateGroupSpeedDisplay(groupType, speed) {
+            const speedElement = document.getElementById(`${groupType}-speed`);
+            const sliderElement = document.getElementById(`${groupType}-slider`);
+            
+            if (speedElement) {
+                speedElement.textContent = `${speed}%`;
+            }
+            
+            if (sliderElement) {
+                sliderElement.value = speed;
+            }
+        }
+
+        function updateMotorCount() {
+            const activeCount = Object.values(motorStates).filter(state => state).length;
+            const countElement = document.getElementById('motor-count');
+            if (countElement) {
+                countElement.textContent = `${activeCount}/6`;
+                countElement.style.color = activeCount > 0 ? '#00ff88' : '#aaa';
+            }
+
+            // Update average speeds - FIXED CALCULATION
+            const levSpeeds = [1,2,3,4].map(i => individualMotorSpeeds[i]).filter(s => s > 0);
+            const thrSpeeds = [5,6].map(i => individualMotorSpeeds[i]).filter(s => s > 0);
+            
+            const levAvg = levSpeeds.length > 0 ? Math.round(levSpeeds.reduce((a,b) => a+b, 0) / levSpeeds.length) : 0;
+            const thrAvg = thrSpeeds.length > 0 ? Math.round(thrSpeeds.reduce((a,b) => a+b, 0) / thrSpeeds.length) : 0;
+            
+            const levAvgElement = document.getElementById('lev-avg-speed');
+            const thrAvgElement = document.getElementById('thr-avg-speed');
+            
+            if (levAvgElement) levAvgElement.textContent = `${levAvg}%`;
+            if (thrAvgElement) thrAvgElement.textContent = `${thrAvg}%`;
+
+            // Update total RPM (simulated)
+            const totalRpm = activeCount * 1500 + Math.random() * 500;
+            const rpmElement = document.getElementById('total-rpm');
+            if (rpmElement) {
+                rpmElement.textContent = Math.round(totalRpm);
+            }
+
+            // Update power usage (simulated)
+            const powerUsage = activeCount * 45 + Math.random() * 20;
+            const powerElement = document.getElementById('power-usage');
+            if (powerElement) {
+                powerElement.textContent = `${Math.round(powerUsage)}W`;
+            }
+        }
+
+        function updateArmButton() {
+            const armButton = document.getElementById('arm-button');
+            const systemStatus = document.getElementById('system-status');
+            
+            if (armButton) {
+                if (systemArmed) {
+                    armButton.textContent = '🔒 SİSTEMİ DEVRE DIŞI BIRAK';
+                    armButton.className = 'arm-button armed';
+                } else {
+                    armButton.textContent = '🔧 SİSTEMİ HAZIRLA';
+                    armButton.className = 'arm-button';
+                }
+            }
+            
+            if (systemStatus) {
+                systemStatus.textContent = systemArmed ? 'Hazır' : 'Devre Dışı';
+                systemStatus.className = systemArmed ? 'status-value status-armed' : 'status-value status-error';
+            }
+        }
+
+        function updateRelayBrakeStatus() {
+            const relayStatus = document.getElementById('relay-status');
+            const relayBrakeStatus = document.getElementById('relay-brake-status');
+            
+            if (relayStatus) {
+                relayStatus.textContent = relayBrakeActive ? 'Aktif' : 'Pasif';
+                relayStatus.style.color = relayBrakeActive ? '#00ff88' : '#ff0066';
+            }
+            
+            if (relayBrakeStatus) {
+                relayBrakeStatus.textContent = relayBrakeActive ? 'Aktif' : 'Pasif';
+                relayBrakeStatus.style.color = relayBrakeActive ? '#00ff88' : '#ff0066';
+            }
+        }
+
+        function updateConnectionStatus(type, connected) {
+            connectionStatus[type] = connected;
+            
+            const statusElement = document.getElementById(`${type === 'backend' ? 'backend' : 'arduino-connection'}-status`);
+            if (statusElement) {
+                statusElement.className = connected ? 'connection-dot connected' : 'connection-dot';
+            }
+            
+            if (type === 'arduino') {
+                const arduinoStatus = document.getElementById('arduino-status');
+                if (arduinoStatus) {
+                    arduinoStatus.textContent = connected ? 'Bağlı' : 'Bağlantısız';
+                    arduinoStatus.className = connected ? 'status-value status-connected' : 'status-value status-error';
+                }
+            }
+
+            // Update last update time
+            const lastUpdateElement = document.getElementById('last-update');
+            if (lastUpdateElement && connected) {
+                lastUpdateElement.textContent = new Date().toLocaleTimeString();
+            }
+        }
+
+        function showNotification(message, type = 'info') {
+            const notification = document.getElementById('notification');
+            if (notification) {
+                notification.textContent = message;
+                notification.className = `notification ${type} show`;
+                
+                setTimeout(() => {
+                    notification.className = 'notification';
+                }, 3000);
+            }
+        }
+
+        // Status Polling
+        async function pollStatus() {
+            try {
+                const response = await makeRequest(`${BACKEND_URL}/api/status`, {
+                    method: 'GET'
+                }, 3000, 1);
+
+                if (response.ok) {
+                    const data = await response.json();
+                    
+                    // Update system state
+                    systemArmed = data.armed;
+                    relayBrakeActive = data.relay_brake_active;
+                    
+                    // Update motor states
+                    Object.keys(data.motors).forEach(motorNum => {
+                        const running = data.motors[motorNum];
+                        const speed = data.individual_speeds[motorNum] || 0;
+                        
+                        motorStates[motorNum] = running;
+                        individualMotorSpeeds[motorNum] = speed;
+                        updateMotorStatus(motorNum, running, speed);
+                        
+                        const inputElement = document.getElementById(`motor${motorNum}-speed-input`);
+                        if (inputElement && speed > 0) {
+                            inputElement.value = speed;
+                        }
+                    });
+                    
+                    // Update group speeds
+                    groupSpeeds.levitation = data.group_speeds.levitation || 0;
+                    groupSpeeds.thrust = data.group_speeds.thrust || 0;
+                    updateGroupSpeedDisplay('levitation', groupSpeeds.levitation);
+                    updateGroupSpeedDisplay('thrust', groupSpeeds.thrust);
+                    
+                    // Update UI elements
+                    updateMotorCount();
+                    updateArmButton();
+                    updateRelayBrakeStatus();
+                    updateConnectionStatus('backend', true);
+                    updateConnectionStatus('arduino', data.connected);
+
+                    consecutiveErrors = 0;
+                } else {
+                    throw new Error('Status request failed');
+                }
+
+            } catch (error) {
+                consecutiveErrors++;
+                if (consecutiveErrors >= 3) {
+                    updateConnectionStatus('backend', false);
+                    updateConnectionStatus('arduino', false);
+                }
+                console.warn('Status poll error:', error.message);
+            }
+        }
+
+        // Initialize Application
+        function initializeApp() {
+            console.log('🚀 SpectraLoop Frontend v3.1 - FIXED Motor Groups initializing...');
+            console.log('✅ Motor Groups: Levitation(1,2,3,4) Thrust(5,6)');
+            
+            // Update initial UI state
+            updateArmButton();
+            updateRelayBrakeStatus();
+            updateMotorCount();
+            
+            // Start status polling
+            setInterval(pollStatus, 2000);
+            
+            // Start sensor data polling
+            setInterval(updateSensorData, 1000);
+            
+            // Initial status check
+            setTimeout(pollStatus, 1000);
+            
+            // Initial sensor data check
+            setTimeout(updateSensorData, 500);
+            
+            // Log initialization
+            logCommand('Frontend başlatıldı - Motor grupları düzeltildi');
+            showNotification('🎯 SpectraLoop sistemi hazır! Motor grupları: Lev(1,2,3,4) Thr(5,6)', 'success');
+            
+            console.log('✅ Frontend initialization complete');
+        }
+
+        // Start the application when page loads
+        document.addEventListener('DOMContentLoaded', initializeApp);
+
+        // Handle page visibility changes
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible') {
+                setTimeout(pollStatus, 500);
+            }
+        });
+
+        // Keyboard shortcuts
+        document.addEventListener('keydown', (event) => {
+            if (event.ctrlKey) {
+                switch(event.key) {
+                    case ' ': // Ctrl+Space for emergency stop
+                        event.preventDefault();
+                        emergencyStop();
+                        break;
+                    case 'a': // Ctrl+A for arm/disarm
+                        event.preventDefault();
+                        toggleArm();
+                        break;
+                    case 't': // Ctrl+T for connection test
+                        event.preventDefault();
+                        testConnection();
+                        break;
+                    case 'r': // Ctrl+R for relay toggle
+                        event.preventDefault();
+                        controlRelayBrake(relayBrakeActive ? 'off' : 'on');
+                        break;
+                    case 'b': // Ctrl+B for brake toggle
+                        event.preventDefault();
+                        // Toggle brake state (implement based on current state)
+                        break;
+                }
+            }
+        });
+
+        console.log('🎛️ SpectraLoop Frontend v3.1 - FIXED Motor Groups + MPU6050 + Brake Control loaded');
+        console.log('🔧 Keyboard shortcuts:');
+        console.log('   Ctrl+Space: Emergency Stop');
+        console.log('   Ctrl+A: Arm/Disarm System');
+        console.log('   Ctrl+T: Test Connection');
+        console.log('   Ctrl+R: Toggle Relay');
+        console.log('   Ctrl+B: Toggle Brake (placeholder)');
+        console.log('🔧 FIXED MOTOR GROUPS:');
+        console.log('   Levitation: Motors 1,2,3,4');
+        console.log('   Thrust: Motors 5,6');
+        console.log('🎯 NEW FEATURES:');
+        console.log('   MPU6050 Sensor Data Display');
+        console.log('   Software Brake Control');
+        console.log('   Arduino Reconnect Function');
+    </script>
+</body>
+</html>
