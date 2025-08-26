@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SpectraLoop Final v3.2 - Motor Control System</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- Header -->
+    <div class="header">
+        <div class="logo">SPECTRALOOP FINAL v3.2 - PRODUCTION</div>
+        <div class="subtitle">Production Motor Control System - Levitation(1-4) Thrust(5-6)</div>
+    </div>
+
+    <!-- Main Container -->
+    <div class="main-container">
+        <!-- Left Panel - Individual Motor Controls -->
+        <div class="control-panel">
+            <div class="panel-title">🎛️ İndividüel Motor Kontrolleri</div>
+            
+            <!-- System Status -->
+            <div class="system-status">
+                <div class="status-item">
+                    <div class="status-label">Arduino</div>
+                    <div class="status-value status-connected" id="arduino-status">Bağlı</div>
+                </div>
+                <div class="status-item">
+                    <div class="status-label">Sistem</div>
+                    <div class="status-value status-armed" id="system-status">Hazır</div>
+                </div>
+                <div class="status-item">
+                    <div class="status-label">Aktif</div>
+                    <div class="status-value" id="motor-count">0/6</div>
+                </div>
+                <div class="status-item">
+                    <div class="status-label">Röle</div>
+                    <div class="status-value" id="relay-status">Pasif</div>
+                </div>
+            </div>
+
+            <!-- Arming Section -->
+            <div class="arm-section">
+                <button class="arm-button" id="arm-button" onclick="toggleArm()">
+                    🔧 SİSTEMİ HAZIRLA
+                </button>
+            </div>
+
+            <!-- Individual Motor Cards -->
+            <div class="individual-motors">
+                <div class="motor-card" data-motor="1">
+                    <div class="motor-header">
+                        <span class="motor-label">Motor 1 (Lev-Pin2)</span>
+                        <span class="motor-status off" id="motor1-status">OFF</span>
+                    </div>
+                    <div class="motor-controls">
+                        <button class="motor-btn start-btn" onclick="startMotor(1)" id="motor1-start">▶</button>
+                        <button class="motor-btn stop-btn" onclick="stopMotor(1)" id="motor1-stop">⏹</button>
+                        <input type="number" class="speed-input" id="motor1-speed-input" min="0" max="100" value="50" onchange="setMotorSpeed(1, this.value)">
+                    </div>
+                    <div class="speed-display" id="motor1-speed-display">Hız: 0%</div>
+                </div>
+
+                <div class="motor-card" data-motor="2">
+                    <div class="motor-header">
+                        <span class="motor-label">Motor 2 (Lev-Pin4)</span>
+                        <span class="motor-status off" id="motor2-status">OFF</span>
+                    </div>
+                    <div class="motor-controls">
+                        <button class="motor-btn start-btn" onclick="startMotor(2)" id="motor2-start">▶</button>
+                        <button class="motor-btn stop-btn" onclick="stopMotor(2)" id="motor2-stop">⏹</button>
+                        <input type="number" class="speed-input" id="motor2-speed-input" min="0" max="100" value="50" onchange="setMotorSpeed(2, this.value)">
+                    </div>
+                    <div class="speed-display" id="motor2-speed-display">Hız: 0%</div>
+                </div>
+
+                <div class="motor-card" data-motor="3">
+                    <div class="motor-header">
+                        <span class="motor-label">Motor 3 (Lev-Pin5)</span>
+                        <span class="motor-status off" id="motor3-status">OFF</span>
+                    </div>
+                    <div class="motor-controls">
+                        <button class="motor-btn start-btn" onclick="startMotor(3)" id="motor3-start">▶</button>
+                        <button class="motor-btn stop-btn" onclick="stopMotor(3)" id="motor3-stop">⏹</button>
+                        <input type="number" class="speed-input" id="motor3-speed-input" min="0" max="100" value="50" onchange="setMotorSpeed(3, this.value)">
+                    </div>
+                    <div class="speed-display" id="motor3-speed-display">Hız: 0%</div>
+                </div>
+
+                <div class="motor-card" data-motor="4">
+                    <div class="motor-header">
+                        <span class="motor-label">Motor 4 (Lev-Pin6)</span>
+                        <span class="motor-status off" id="motor4-status">OFF</span>
+                    </div>
+                    <div class="motor-controls">
+                        <button class="motor-btn start-btn" onclick="startMotor(4)" id="motor4-start">▶</button>
+                        <button class="motor-btn stop-btn" onclick="stopMotor(4)" id="motor4-stop">⏹</button>
+                        <input type="number" class="speed-input" id="motor4-speed-input" min="0" max="100" value="50" onchange="setMotorSpeed(4, this.value)">
+                    </div>
+                    <div class="speed-display" id="motor4-speed-display">Hız: 0%</div>
+                </div>
+
+                <div class="motor-card" data-motor="5">
+                    <div class="motor-header">
+                        <span class="motor-label">Motor 5 (Thr-Pin3)</span>
+                        <span class="motor-status off" id="motor5-status">OFF</span>
+                    </div>
+                    <div class="motor-controls">
+                        <button class="motor-btn start-btn" onclick="startMotor(5)" id="motor5-start">▶</button>
+                        <button class="motor-btn stop-btn" onclick="stopMotor(5)" id="motor5-stop">⏹</button>
+                        <input type="number" class="speed-input" id="motor5-speed-input" min="0" max="100" value="50" onchange="setMotorSpeed(5, this.value)">
+                    </div>
+                    <div class="speed-display" id="motor5-speed-display">Hız: 0%</div>
+                </div>
+
+                <div class="motor-card" data-motor="6">
+                    <div class="motor-header">
+                        <span class="motor-label">Motor 6 (Thr-Pin7)</span>
+                        <span class="motor-status off" id="motor6-status">OFF</span>
+                    </div>
+                    <div class="motor-controls">
+                        <button class="motor-btn start-btn" onclick="startMotor(6)" id="motor6-start">▶</button>
+                        <button class="motor-btn stop-btn" onclick="stopMotor(6)" id="motor6-stop">⏹</button>
+                        <input type="number" class="speed-input" id="motor6-speed-input" min="0" max="100" value="50" onchange="setMotorSpeed(6, this.value)">
+                    </div>
+                    <div class="speed-display" id="motor6-speed-display">Hız: 0%</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Middle Panel - Group Controls -->
+        <div class="control-panel">
+            <div class="panel-title">🚀 Grup Kontrolleri</div>
+            
+            <!-- Levitation Group -->
+            <div class="group-control">
+                <div class="group-title">🔮 Levitasyon Grubu (M1,2,3,4)</div>
+                <div class="group-info">Pin: 2,4,5,6 - Levitation Motors</div>
+                <div class="group-speed-control">
+                    <button class="speed-btn" onclick="adjustGroupSpeed('levitation', -10)">−</button>
+                    <input type="range" class="speed-slider" id="levitation-slider" 
+                           min="0" max="100" value="0" 
+                           oninput="setGroupSpeed('levitation', this.value)">
+                    <button class="speed-btn" onclick="adjustGroupSpeed('levitation', 10)">+</button>
+                    <span class="speed-value" id="levitation-speed">0%</span>
+                </div>
+                <div class="group-buttons">
+                    <button class="group-btn start-btn" onclick="startGroup('levitation')">🚀 BAŞLAT</button>
+                    <button class="group-btn stop-btn" onclick="stopGroup('levitation')">⏹ DURDUR</button>
+                </div>
+            </div>
+
+            <!-- Thrust Group -->
+            <div class="group-control">
+                <div class="group-title">⚡ İtki Grubu (M5,6)</div>
+                <div class="group-info">Pin: 3,7 - Thrust Motors</div>
+                <div class="group-speed-control">
+                    <button class="speed-btn" onclick="adjustGroupSpeed('thrust', -10)">−</button>
+                    <input type="range" class="speed-slider" id="thrust-slider" 
+                           min="0" max="100" value="0" 
+                           oninput="setGroupSpeed('thrust', this.value)">
+                    <button class="speed-btn" onclick="adjustGroupSpeed('thrust', 10)">+</button>
+                    <span class="speed-value" id="thrust-speed">0%</span>
+                </div>
+                <div class="group-buttons">
+                    <button class="group-btn start-btn" onclick="startGroup('thrust')">⚡ BAŞLAT</button>
+                    <button class="group-btn stop-btn" onclick="stopGroup('thrust')">⏹ DURDUR</button>
+                </div>
+            </div>
+
+            <!-- System Controls -->
+            <div class="system-controls">
+                <h4 class="controls-title">🔧 Sistem Kontrolleri</h4>
+                <div class="control-grid">
+                    <button class="system-btn relay-brake-on" onclick="controlRelayBrake('on')">
+                        🔌 RÖLE AKTİF
+                    </button>
+                    <button class="system-btn relay-brake-off" onclick="controlRelayBrake('off')">
+                        ⚡ RÖLE PASİF
+                    </button>
+                    <button class="system-btn brake-on" onclick="controlBrake('on')">
+                        🔒 SW BRAKE ON
+                    </button>
+                    <button class="system-btn brake-off" onclick="controlBrake('off')">
+                        🔓 SW BRAKE OFF
+                    </button>
+                    <button class="system-btn emergency-btn" onclick="emergencyStop()">
+                        🚨 ACİL DURDURMA
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Right Panel - System Info -->
+        <div class="control-panel">
+            <div class="panel-title">📊 Sistem Bilgileri</div>
+            
+            <!-- Performance Info -->
+            <div class="info-section">
+                <h4 class="section-title">📈 Performans</h4>
+                <div class="info-grid">
+                    <div class="info-item">
+                        <div class="info-label">Toplam RPM</div>
+                        <div class="info-value rpm-value" id="total-rpm">0</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">Güç Tüketimi</div>
+                        <div class="info-value power-value" id="power-usage">0W</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">Sistem Sıcaklık</div>
+                        <div class="info-value temp-value" id="system-temperature">25°C</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">Röle Durumu</div>
+                        <div class="info-value relay-value" id="relay-brake-status">Pasif</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Motor Speed Summary -->
+            <div class="info-section">
+                <h4 class="section-title">⚙️ Motor Durumu</h4>
+                <div class="info-grid">
+                    <div class="info-item">
+                        <div class="info-label">Lev Grubu Ort.</div>
+                        <div class="info-value speed-value" id="lev-avg-speed">0%</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">İtki Grubu Ort.</div>
+                        <div class="info-value speed-value" id="thr-avg-speed">0%</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">Aktif Motorlar</div>
+                        <div class="info-value motor-value" id="active-motors">0/6</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">Toplam Hız</div>
+                        <div class="info-value total-speed-value" id="total-speed">0%</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Connection Status -->
+            <div class="info-section">
+                <h4 class="section-title">🔗 Bağlantı Durumu</h4>
+                <div class="connection-status">
+                    <div class="connection-item">
+                        <span class="connection-label">Backend:</span>
+                        <div class="connection-dot" id="backend-status"></div>
+                        <span class="connection-text" id="backend-text">Bağlantısız</span>
+                    </div>
+                    <div class="connection-item">
+                        <span class="connection-label">Arduino:</span>
+                        <div class="connection-dot" id="arduino-connection-status"></div>
+                        <span class="connection-text" id="arduino-text">Bağlantısız</span>
+                    </div>
+                    <div class="connection-item">
+                        <span class="connection-label">Son Güncelleme:</span>
+                        <span class="update-time" id="last-update">--:--:--</span>
+                    </div>
+                </div>
+                
+                <div class="connection-controls">
+                    <button class="connection-btn test-btn" onclick="testConnection()">
+                        🔍 BAĞLANTI TESTİ
+                    </button>
+                    <button class="connection-btn reconnect-btn" onclick="reconnectArduino()">
+                        🔄 YENİDEN BAĞLAN
+                    </button>
+                </div>
+            </div>
+
+            <!-- Command Log -->
+            <div class="info-section">
+                <h4 class="section-title">📝 Komut Geçmişi</h4>
+                <div id="command-log" class="command-log">
+                    <div class="log-entry">Sistem başlatılıyor...</div>
+                </div>
+            </div>
+
+            <!-- System Stats -->
+            <div class="info-section">
+                <h4 class="section-title">📊 İstatistikler</h4>
+                <div class="stats-grid">
+                    <div class="stat-item">
+                        <span class="stat-label">Komutlar:</span>
+                        <span class="stat-value" id="total-commands">0</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">Hatalar:</span>
+                        <span class="stat-value error-stat" id="total-errors">0</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">Uptime:</span>
+                        <span class="stat-value" id="uptime">0s</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">Port:</span>
+                        <span class="stat-value" id="arduino-port">--</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Emergency Stop Button -->
+    <div class="emergency-stop" onclick="emergencyStop()">
+        <div class="emergency-icon">🚨</div>
+        <div class="emergency-text">STOP</div>
+    </div>
+
+    <!-- Notification -->
+    <div id="notification" class="notification">
+        <div class="notification-content">
+            <span class="notification-icon" id="notification-icon">ℹ️</span>
+            <span class="notification-message" id="notification-message">Mesaj</span>
+        </div>
+        <button class="notification-close" onclick="closeNotification()">×</button>
+    </div>
+
+    <!-- Loading Overlay -->
+    <div id="loading-overlay" class="loading-overlay">
+        <div class="loading-spinner"></div>
+        <div class="loading-text">Sistem başlatılıyor...</div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="script.js"></script>
+</body>
+</html>
