@@ -10,7 +10,7 @@
     <!-- Header -->
     <div class="header">
         <div class="logo">SPECTRALOOP FINAL v3.2 - PRODUCTION</div>
-        <div class="subtitle">Production Motor Control System - Levitation(1-4) Thrust(5-6) - Temperature Safety</div>
+        <div class="subtitle">Production Motor Control System - Levitation(1-4) Thrust(5-6) - DUAL Temperature Safety</div>
     </div>
 
     <!-- Main Container -->
@@ -19,37 +19,80 @@
         <div class="control-panel">
             <div class="panel-title">🎛️ İndividüel Motor Kontrolleri</div>
             
-            <!-- Temperature Section - NEW -->
+            <!-- DUAL Temperature Section - COMPLETELY NEW -->
             <div class="temperature-section" id="temperature-section">
                 <div class="temperature-header">
-                    <h4>🌡️ Sistem Sıcaklığı</h4>
+                    <h4>🌡️ ÇIFT Sensör Sıcaklığı</h4>
                     <div class="temp-emergency-indicator" id="temp-emergency" style="display: none;">
                         <span class="emergency-text">ALARM!</span>
                     </div>
                 </div>
                 
+                <!-- DUAL SENSOR MAIN DISPLAY -->
                 <div class="temperature-main">
-                    <div class="temp-reading-container">
-                        <div class="temp-current" id="temp-current">25.0°C</div>
-                        <div class="temp-status-text" id="temp-status-text">Güvenli</div>
+                    <!-- Primary Sensor (Pin 8) -->
+                    <div class="sensor-reading primary" id="sensor1-reading">
+                        <div class="sensor-label">Sensör 1 (Pin 8)</div>
+                        <div class="temp-current primary" id="sensor1-temp">25.0°C</div>
+                        <div class="sensor-connection-status">
+                            <span id="sensor1-status-mini" class="sensor-connection-mini connected">●</span>
+                            <span id="sensor1-status-text">Bağlı</span>
+                        </div>
                     </div>
                     
-                    <div class="temp-details">
-                        <div class="temp-detail-item">
-                            <span class="temp-label">Max:</span>
-                            <span class="temp-value" id="temp-max">25.0°C</span>
-                        </div>
-                        <div class="temp-detail-item">
-                            <span class="temp-label">Alarm:</span>
-                            <span class="temp-value" id="temp-alarm-count">0</span>
-                        </div>
-                        <div class="temp-detail-item">
-                            <span class="temp-label">Buzzer:</span>
-                            <span class="temp-value" id="buzzer-status">Pasif</span>
+                    <!-- Secondary Sensor (Pin 13) -->
+                    <div class="sensor-reading secondary" id="sensor2-reading">
+                        <div class="sensor-label">Sensör 2 (Pin 13)</div>
+                        <div class="temp-current secondary" id="sensor2-temp">25.0°C</div>
+                        <div class="sensor-connection-status">
+                            <span id="sensor2-status-mini" class="sensor-connection-mini connected">●</span>
+                            <span id="sensor2-status-text">Bağlı</span>
                         </div>
                     </div>
                 </div>
                 
+                <!-- SYSTEM STATUS BAR -->
+               
+                <!-- DUAL SENSOR DETAILS -->
+                <div class="dual-sensor-details">
+                    <div class="sensor-detail-group">
+                        <h5>Sensör 1 Detayları</h5>
+                        <div class="sensor-detail-item">
+                            <span class="sensor-detail-label">Max:</span>
+                            <span class="sensor-detail-value" id="sensor1-max">25.0°C</span>
+                        </div>
+                        <div class="sensor-detail-item">
+                            <span class="sensor-detail-label">Bağlantı:</span>
+                            <span class="sensor-detail-value" id="sensor1-connection">Bağlı</span>
+                        </div>
+                    </div>
+                    <div class="sensor-detail-group">
+                        <h5>Sensör 2 Detayları</h5>
+                        <div class="sensor-detail-item">
+                            <span class="sensor-detail-label">Max:</span>
+                            <span class="sensor-detail-value" id="sensor2-max">25.0°C</span>
+                        </div>
+                        <div class="sensor-detail-item">
+                            <span class="sensor-detail-label">Bağlantı:</span>
+                            <span class="sensor-detail-value" id="sensor2-connection">Bağlı</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- TEMPERATURE DIFFERENCE WARNING -->
+                <div class="temp-difference-warning" id="temp-difference-warning" style="display: none;">
+                    <div class="temp-diff-text">
+                        ⚠️ Büyük Sensör Farkı Tespit Edildi! Fark: <span id="temp-difference-value">0.0°C</span>
+                    </div>
+                </div>
+                
+                <!-- REDUNDANCY STATUS -->
+                <div class="redundancy-status">
+                    <div class="redundancy-label">Sensör Redundancy:</div>
+                    <div class="redundancy-value" id="sensor-redundancy-status">Çift Aktif</div>
+                </div>
+                
+                <!-- TEMPERATURE THRESHOLDS -->
                 <div class="temp-thresholds">
                     <div class="threshold-item safe">
                         <div class="threshold-label">Güvenli</div>
@@ -65,9 +108,13 @@
                     </div>
                 </div>
                 
+                <!-- TEMPERATURE CONTROLS -->
                 <div class="temp-controls">
                     <button class="buzzer-btn" id="buzzer-off-btn" onclick="turnOffBuzzer()" disabled>
                         🔇 Buzzer Kapat
+                    </button>
+                    <button class="sensor-detail-btn" onclick="showSensorDetails()">
+                        📊 Sensör Detayları
                     </button>
                     <div class="temp-last-update">
                         Son güncelleme: <span id="temp-last-update">--:--:--</span>
@@ -251,25 +298,41 @@
         <div class="control-panel">
             <div class="panel-title">📊 Sistem Bilgileri</div>
             
-            <!-- Temperature Info Section - Enhanced -->
+            <!-- DUAL Temperature Info Section - ENHANCED -->
             <div class="info-section">
-                <h4 class="section-title">🌡️ Sıcaklık Detayları</h4>
+                <h4 class="section-title">🌡️ ÇIFT Sensör Detayları</h4>
                 <div class="info-grid">
                     <div class="info-item">
-                        <div class="info-label">Mevcut</div>
-                        <div class="info-value temp-value" id="detailed-temp-current">25.0°C</div>
+                        <div class="info-label">Sensör 1</div>
+                        <div class="info-value temp-value" id="detailed-sensor1-temp">25.0°C</div>
                     </div>
                     <div class="info-item">
-                        <div class="info-label">Durum</div>
-                        <div class="info-value" id="detailed-temp-status">Güvenli</div>
+                        <div class="info-label">Sensör 2</div>
+                        <div class="info-value temp-value" id="detailed-sensor2-temp">25.0°C</div>
                     </div>
                     <div class="info-item">
-                        <div class="info-label">Maximum</div>
-                        <div class="info-value" id="detailed-temp-max">25.0°C</div>
+                        <div class="info-label">Güvenlik Max</div>
+                        <div class="info-value temp-value" id="detailed-safety-temp">25.0°C</div>
                     </div>
                     <div class="info-item">
-                        <div class="info-label">Alarm Sayısı</div>
-                        <div class="info-value" id="detailed-alarm-count">0</div>
+                        <div class="info-label">Fark</div>
+                        <div class="info-value" id="detailed-temp-diff">0.0°C</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">S1 Max</div>
+                        <div class="info-value temp-value" id="detailed-sensor1-max">25.0°C</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">S2 Max</div>
+                        <div class="info-value temp-value" id="detailed-sensor2-max">25.0°C</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">Redundancy</div>
+                        <div class="info-value" id="detailed-redundancy-status">Çift Aktif</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">Update Hz</div>
+                        <div class="info-value" id="temp-update-frequency">0.0 Hz</div>
                     </div>
                 </div>
             </div>
@@ -335,6 +398,16 @@
                         <span class="connection-text" id="arduino-text">Bağlantısız</span>
                     </div>
                     <div class="connection-item">
+                        <span class="connection-label">Sensör 1:</span>
+                        <div class="connection-dot" id="sensor1-dot"></div>
+                        <span class="connection-text" id="sensor1-status-text">Bağlantısız</span>
+                    </div>
+                    <div class="connection-item">
+                        <span class="connection-label">Sensör 2:</span>
+                        <div class="connection-dot" id="sensor2-dot"></div>
+                        <span class="connection-text" id="sensor2-status-text">Bağlantısız</span>
+                    </div>
+                    <div class="connection-item">
                         <span class="connection-label">Son Güncelleme:</span>
                         <span class="update-time" id="last-update">--:--:--</span>
                     </div>
@@ -354,7 +427,7 @@
             <div class="info-section">
                 <h4 class="section-title">📝 Komut Geçmişi</h4>
                 <div id="command-log" class="command-log">
-                    <div class="log-entry">Sistem başlatılıyor...</div>
+                    <div class="log-entry">Çift sensör sistemi başlatılıyor...</div>
                 </div>
             </div>
 
@@ -389,14 +462,88 @@
         <div class="emergency-text">STOP</div>
     </div>
 
-    <!-- Temperature Emergency Warning -->
+    <!-- DUAL Temperature Emergency Warning -->
     <div class="temperature-emergency-warning" id="temperature-emergency-warning" style="display: none;">
         <div class="warning-content">
             <div class="warning-icon">🌡️🚨</div>
             <div class="warning-text">
-                <div class="warning-title">SICAKLIK ALARMI!</div>
+                <div class="warning-title">ÇIFT SENSÖR SICAKLIK ALARMI!</div>
                 <div class="warning-subtitle">Sistem güvenlik nedeniyle durduruldu</div>
-                <div class="warning-temp">Sıcaklık: <span id="warning-temp-value">--°C</span></div>
+                <div class="warning-temp-details">
+                    <div class="warning-temp-item">
+                        <div class="warning-temp-label">Sensör 1</div>
+                        <div class="warning-temp-value" id="warning-temp1-value">--°C</div>
+                    </div>
+                    <div class="warning-temp-item">
+                        <div class="warning-temp-label">Sensör 2</div>
+                        <div class="warning-temp-value" id="warning-temp2-value">--°C</div>
+                    </div>
+                    <div class="warning-temp-item">
+                        <div class="warning-temp-label">Maximum</div>
+                        <div class="warning-temp-value" id="warning-temp-max-value">--°C</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Sensor Detail Modal -->
+    <div class="sensor-detail-modal" id="sensor-detail-modal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 class="modal-title">🌡️ ÇIFT Sensör Detay Bilgileri</h3>
+                <span class="modal-close" onclick="hideSensorDetails()">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div class="modal-section">
+                    <h4>Sensör 1 (Pin 8) - Primary</h4>
+                    <div class="modal-detail-item">
+                        <span class="modal-detail-label">Mevcut Sıcaklık:</span>
+                        <span class="modal-detail-value" id="modal-sensor1-temp">25.0°C</span>
+                    </div>
+                    <div class="modal-detail-item">
+                        <span class="modal-detail-label">Maximum Sıcaklık:</span>
+                        <span class="modal-detail-value" id="modal-sensor1-max">25.0°C</span>
+                    </div>
+                    <div class="modal-detail-item">
+                        <span class="modal-detail-label">Bağlantı Durumu:</span>
+                        <span class="modal-detail-value" id="modal-sensor1-connection">Bağlı</span>
+                    </div>
+                </div>
+                <div class="modal-section">
+                    <h4>Sensör 2 (Pin 13) - Secondary</h4>
+                    <div class="modal-detail-item">
+                        <span class="modal-detail-label">Mevcut Sıcaklık:</span>
+                        <span class="modal-detail-value" id="modal-sensor2-temp">25.0°C</span>
+                    </div>
+                    <div class="modal-detail-item">
+                        <span class="modal-detail-label">Maximum Sıcaklık:</span>
+                        <span class="modal-detail-value" id="modal-sensor2-max">25.0°C</span>
+                    </div>
+                    <div class="modal-detail-item">
+                        <span class="modal-detail-label">Bağlantı Durumu:</span>
+                        <span class="modal-detail-value" id="modal-sensor2-connection">Bağlı</span>
+                    </div>
+                </div>
+                <div class="modal-section">
+                    <h4>Güvenlik & Redundancy</h4>
+                    <div class="modal-detail-item">
+                        <span class="modal-detail-label">Güvenlik Sıcaklığı:</span>
+                        <span class="modal-detail-value" id="modal-safety-temp">25.0°C</span>
+                    </div>
+                    <div class="modal-detail-item">
+                        <span class="modal-detail-label">Sensör Farkı:</span>
+                        <span class="modal-detail-value" id="modal-temp-diff">0.0°C</span>
+                    </div>
+                    <div class="modal-detail-item">
+                        <span class="modal-detail-label">Update Frekansı:</span>
+                        <span class="modal-detail-value" id="modal-update-freq">0.0 Hz</span>
+                    </div>
+                    <div class="modal-detail-item">
+                        <span class="modal-detail-label">Redundancy Status:</span>
+                        <span class="modal-detail-value" id="modal-redundancy">Çift Aktif</span>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -413,7 +560,7 @@
     <!-- Loading Overlay -->
     <div id="loading-overlay" class="loading-overlay">
         <div class="loading-spinner"></div>
-        <div class="loading-text">Sistem başlatılıyor...</div>
+        <div class="loading-text">Çift sensör sistemi başlatılıyor...</div>
     </div>
 
     <!-- Scripts -->
