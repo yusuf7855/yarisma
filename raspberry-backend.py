@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """
-SpectraLoop Motor Control Backend - Complete Production v3.2
-Enhanced stability and performance - MPU6050 Removed
+SpectraLoop Motor Control Backend - Fixed Production v3.2
+Arduino komutları sync olarak gönderiliyor - Motor kontrol sorunu düzeltildi
 Individual + Group motor control + Relay Brake Control
 Motor Pin Mapping: İtki (3,7), Levitasyon (2,4,5,6)
-Complete and error-free implementation
 """
 
 from flask import Flask, jsonify, request
@@ -71,9 +70,9 @@ class ProductionArduinoController:
         self.reconnect_attempts = 0
         self.max_attempts = 5
         
-        # Command processing
+        # Command processing - async için queue
         self.command_queue = queue.Queue(maxsize=100)
-        self.response_timeout = 2.0
+        self.response_timeout = 3.0
         
         # Connection management
         self.connection_lock = threading.Lock()
@@ -130,7 +129,6 @@ class ProductionArduinoController:
             for port in common_ports:
                 try:
                     if '*' in port:
-                        # Skip wildcard patterns for now
                         continue
                     if os.path.exists(port) or port.startswith('COM'):
                         test_conn = serial.Serial(port, self.baudrate, timeout=1)
@@ -170,7 +168,6 @@ class ProductionArduinoController:
                 # Check if port exists (for Unix-like systems)
                 if not self.port.startswith('COM') and not os.path.exists(self.port):
                     logger.error(f"Port {self.port} does not exist")
-                    # Try to find a new port
                     new_port = self.find_arduino_port()
                     if new_port:
                         self.port = new_port
@@ -321,9 +318,9 @@ class ProductionArduinoController:
                     if self.connect():
                         logger.info("Automatic reconnection successful")
                     else:
-                        time.sleep(10)  # Wait before next attempt
+                        time.sleep(10)
                 
-                time.sleep(15)  # Monitor interval
+                time.sleep(15)
                 
             except Exception as e:
                 logger.error(f"Connection monitor error: {e}")
@@ -332,7 +329,7 @@ class ProductionArduinoController:
         logger.info("Connection monitor thread stopped")
     
     def send_command_async(self, command):
-        """Send command asynchronously via queue"""
+        """Send command asynchronously via queue - Sadece kritik olmayan komutlar için"""
         try:
             if shutdown_event.is_set():
                 return False
@@ -353,8 +350,8 @@ class ProductionArduinoController:
             logger.error(f"Async command error: {e}")
             return False
     
-    def send_command_sync(self, command, timeout=3.0):
-        """Send command synchronously with timeout"""
+    def send_command_sync(self, command, timeout=5.0):
+        """Send command synchronously with timeout - TÜM MOTOR KOMUTLARI İÇİN"""
         if not self.is_connected or not self.connection or shutdown_event.is_set():
             return False, "Not connected"
         
@@ -363,7 +360,7 @@ class ProductionArduinoController:
                 # Rate limiting
                 current_time = time.time()
                 time_since_last = current_time - self.last_command_time
-                if time_since_last < 0.05:  # 50ms minimum interval
+                if time_since_last < 0.05:
                     time.sleep(0.05 - time_since_last)
                 
                 # Send command
@@ -372,7 +369,7 @@ class ProductionArduinoController:
                 self.connection.flush()
                 self.last_command_time = time.time()
                 
-                # Read response
+                # Read response with longer timeout for motor commands
                 start_time = time.time()
                 response = ""
                 
@@ -385,8 +382,11 @@ class ProductionArduinoController:
                             data = self.connection.read(self.connection.in_waiting)
                             response += data.decode('utf-8', errors='ignore')
                             
-                            # Check if we have a complete response
-                            if '\n' in response or len(response) > 100:
+                            # Motor komutları için özel kontrol
+                            if any(keyword in response for keyword in ["MOTOR_STARTED", "MOTOR_STOPPED", "LEV_GROUP_STARTED", "THR_GROUP_STARTED", "ARMED", "RELAY_BRAKE:"]):
+                                break
+                            
+                            if '\n' in response or len(response) > 200:
                                 break
                         except Exception as e:
                             logger.debug(f"Read error: {e}")
@@ -401,7 +401,7 @@ class ProductionArduinoController:
                 
                 response = response.strip()
                 if response:
-                    logger.debug(f"Command '{command}' response: '{response[:100]}...' ({len(response)} chars)")
+                    logger.debug(f"Command '{command}' response: '{response}'")
                     return True, response
                 else:
                     logger.warning(f"Command '{command}' got empty response")
@@ -437,7 +437,6 @@ class ProductionArduinoController:
                 logger.debug(f"Async command executed successfully: {command}")
             else:
                 if attempts < max_attempts:
-                    # Retry the command
                     command_data['attempts'] = attempts + 1
                     try:
                         self.command_queue.put(command_data, timeout=0.1)
@@ -454,25 +453,20 @@ class ProductionArduinoController:
         """Manual reconnect with full reset"""
         logger.info("Manual reconnection requested")
         
-        # Stop connection temporarily
         old_connected = self.is_connected
         self.is_connected = False
         
         try:
-            # Disconnect cleanly
             self.disconnect(keep_threads=True)
             time.sleep(2)
             
-            # Reset attempts counter for manual reconnect
             self.reconnect_attempts = 0
             
-            # Try to find port again
             new_port = self.find_arduino_port()
             if new_port:
                 self.port = new_port
                 logger.info(f"Using port for reconnection: {self.port}")
             
-            # Attempt connection
             success = self.connect()
             
             if success:
@@ -490,21 +484,17 @@ class ProductionArduinoController:
         """Safely disconnect from Arduino"""
         logger.info("Disconnecting Arduino...")
         
-        # Update connection state immediately
         self.is_connected = False
         system_state['connected'] = False
         
-        # Close serial connection safely
         if self.connection:
             try:
-                # Try to acquire lock with timeout
                 acquired = self.connection_lock.acquire(timeout=3.0)
                 try:
                     if acquired:
                         self.connection.close()
                         logger.info("Serial connection closed successfully")
                     else:
-                        # Force close if we can't acquire lock
                         self.connection.close()
                         logger.warning("Serial connection force closed")
                 except Exception as e:
@@ -518,12 +508,10 @@ class ProductionArduinoController:
             finally:
                 self.connection = None
         
-        # Stop threads if requested
         if not keep_threads:
             logger.info("Stopping background threads...")
             shutdown_event.set()
             
-            # Wait for threads to finish
             if self.processor_thread and self.processor_thread.is_alive():
                 self.processor_thread.join(timeout=2.0)
             
@@ -568,7 +556,7 @@ def get_status():
                     'baudrate': arduino_controller.baudrate if arduino_controller else None
                 },
                 'timestamp': datetime.now().isoformat(),
-                'version': '3.2-production-complete'
+                'version': '3.2-fixed-sync'
             })
     except Exception as e:
         logger.error(f"Status endpoint error: {e}")
@@ -589,17 +577,20 @@ def arm_system():
             'message': 'Cannot arm while relay brake is inactive'
         }), 400
     
+    if system_state['brake_active']:
+        return jsonify({
+            'status': 'error',
+            'message': 'Cannot arm while software brake is active'
+        }), 400
+    
     try:
-        # Clear input/output buffers
         if arduino_controller.connection:
             arduino_controller.connection.flushInput()
             arduino_controller.connection.flushOutput()
         
-        # Send ARM command
         success, response = arduino_controller.send_command_sync("ARM", timeout=5.0)
         
         if success and response:
-            # Parse response lines
             response_lines = [line.strip() for line in response.split('\n') if line.strip()]
             
             for line in response_lines:
@@ -615,7 +606,6 @@ def arm_system():
                         'response': line
                     })
                 
-                # Check for specific error conditions
                 elif "ERROR:" in line_upper:
                     if "RELAY_INACTIVE" in line_upper or "CANNOT_ARM_RELAY" in line_upper:
                         return jsonify({
@@ -633,7 +623,6 @@ def arm_system():
                             'message': f'Arduino error: {line}'
                         }), 400
             
-            # No clear ARMED response found
             return jsonify({
                 'status': 'error',
                 'message': f'Unexpected Arduino response: {response}',
@@ -668,7 +657,6 @@ def disarm_system():
         if success and "DISARMED" in response.upper():
             with state_lock:
                 system_state['armed'] = False
-                # Reset all motor states
                 for i in range(1, 7):
                     motor_states[i] = False
                     individual_motor_speeds[i] = 0
@@ -694,10 +682,10 @@ def disarm_system():
             'message': str(e)
         }), 500
 
-# Individual Motor Control Routes
+# Individual Motor Control Routes - SYNC COMMANDS
 @app.route('/api/motor/<int:motor_num>/start', methods=['POST'])
 def start_individual_motor(motor_num):
-    """Start individual motor"""
+    """Start individual motor - SYNC COMMAND"""
     if not arduino_controller or not arduino_controller.is_connected:
         return jsonify({'status': 'error', 'message': 'Arduino not connected'}), 503
     
@@ -718,29 +706,39 @@ def start_individual_motor(motor_num):
             return jsonify({'status': 'error', 'message': 'Speed must be 0-100'}), 400
         
         command = f"MOTOR:{motor_num}:START:{speed}"
-        success = arduino_controller.send_command_async(command)
+        success, response = arduino_controller.send_command_sync(command, timeout=5.0)
         
-        if success:
-            with state_lock:
-                motor_states[motor_num] = True
-                individual_motor_speeds[motor_num] = speed
-            
-            motor_type = "Thrust" if motor_num in [5, 6] else "Levitation"
-            pin_mapping = {1: 2, 2: 4, 3: 5, 4: 6, 5: 3, 6: 7}
-            pin_num = pin_mapping.get(motor_num, "Unknown")
-            
-            logger.info(f"Motor {motor_num} ({motor_type}, Pin {pin_num}) started at {speed}%")
-            return jsonify({
-                'status': 'success',
-                'motor': motor_num,
-                'action': 'start',
-                'speed': speed,
-                'type': motor_type,
-                'pin': pin_num,
-                'message': f'Motor {motor_num} started at {speed}%'
-            })
+        if success and response:
+            if "MOTOR_STARTED" in response:
+                with state_lock:
+                    motor_states[motor_num] = True
+                    individual_motor_speeds[motor_num] = speed
+                
+                motor_type = "Thrust" if motor_num in [5, 6] else "Levitation"
+                pin_mapping = {1: 2, 2: 4, 3: 5, 4: 6, 5: 3, 6: 7}
+                pin_num = pin_mapping.get(motor_num, "Unknown")
+                
+                logger.info(f"Motor {motor_num} ({motor_type}, Pin {pin_num}) started at {speed}%")
+                return jsonify({
+                    'status': 'success',
+                    'motor': motor_num,
+                    'action': 'start',
+                    'speed': speed,
+                    'type': motor_type,
+                    'pin': pin_num,
+                    'message': f'Motor {motor_num} started at {speed}%',
+                    'arduino_response': response
+                })
+            else:
+                return jsonify({
+                    'status': 'error',
+                    'message': f'Motor start failed: {response}'
+                }), 500
         else:
-            return jsonify({'status': 'error', 'message': 'Command queue full or error'}), 500
+            return jsonify({
+                'status': 'error', 
+                'message': f'Arduino communication failed: {response}'
+            }), 500
             
     except ValueError:
         return jsonify({'status': 'error', 'message': 'Invalid speed value'}), 400
@@ -750,7 +748,7 @@ def start_individual_motor(motor_num):
 
 @app.route('/api/motor/<int:motor_num>/stop', methods=['POST'])
 def stop_individual_motor(motor_num):
-    """Stop individual motor"""
+    """Stop individual motor - SYNC COMMAND"""
     if not arduino_controller or not arduino_controller.is_connected:
         return jsonify({'status': 'error', 'message': 'Arduino not connected'}), 503
     
@@ -759,23 +757,33 @@ def stop_individual_motor(motor_num):
     
     try:
         command = f"MOTOR:{motor_num}:STOP"
-        success = arduino_controller.send_command_async(command)
+        success, response = arduino_controller.send_command_sync(command, timeout=5.0)
         
-        if success:
-            with state_lock:
-                motor_states[motor_num] = False
-                individual_motor_speeds[motor_num] = 0
-            
-            logger.info(f"Motor {motor_num} stopped")
-            return jsonify({
-                'status': 'success',
-                'motor': motor_num,
-                'action': 'stop',
-                'speed': 0,
-                'message': f'Motor {motor_num} stopped'
-            })
+        if success and response:
+            if "MOTOR_STOPPED" in response:
+                with state_lock:
+                    motor_states[motor_num] = False
+                    individual_motor_speeds[motor_num] = 0
+                
+                logger.info(f"Motor {motor_num} stopped")
+                return jsonify({
+                    'status': 'success',
+                    'motor': motor_num,
+                    'action': 'stop',
+                    'speed': 0,
+                    'message': f'Motor {motor_num} stopped',
+                    'arduino_response': response
+                })
+            else:
+                return jsonify({
+                    'status': 'error',
+                    'message': f'Motor stop failed: {response}'
+                }), 500
         else:
-            return jsonify({'status': 'error', 'message': 'Command queue full or error'}), 500
+            return jsonify({
+                'status': 'error',
+                'message': f'Arduino communication failed: {response}'
+            }), 500
             
     except Exception as e:
         logger.error(f"Motor {motor_num} stop error: {e}")
@@ -783,7 +791,7 @@ def stop_individual_motor(motor_num):
 
 @app.route('/api/motor/<int:motor_num>/speed', methods=['POST'])
 def set_individual_motor_speed(motor_num):
-    """Set individual motor speed"""
+    """Set individual motor speed - SYNC COMMAND"""
     if not arduino_controller or not arduino_controller.is_connected:
         return jsonify({'status': 'error', 'message': 'Arduino not connected'}), 503
     
@@ -807,21 +815,31 @@ def set_individual_motor_speed(motor_num):
             return jsonify({'status': 'error', 'message': 'Speed must be 0-100'}), 400
         
         command = f"MOTOR:{motor_num}:SPEED:{speed}"
-        success = arduino_controller.send_command_async(command)
+        success, response = arduino_controller.send_command_sync(command, timeout=5.0)
         
-        if success:
-            with state_lock:
-                individual_motor_speeds[motor_num] = speed
-            
-            logger.info(f"Motor {motor_num} speed set to {speed}%")
-            return jsonify({
-                'status': 'success',
-                'motor': motor_num,
-                'speed': speed,
-                'message': f'Motor {motor_num} speed set to {speed}%'
-            })
+        if success and response:
+            if "MOTOR_SPEED" in response:
+                with state_lock:
+                    individual_motor_speeds[motor_num] = speed
+                
+                logger.info(f"Motor {motor_num} speed set to {speed}%")
+                return jsonify({
+                    'status': 'success',
+                    'motor': motor_num,
+                    'speed': speed,
+                    'message': f'Motor {motor_num} speed set to {speed}%',
+                    'arduino_response': response
+                })
+            else:
+                return jsonify({
+                    'status': 'error',
+                    'message': f'Motor speed failed: {response}'
+                }), 500
         else:
-            return jsonify({'status': 'error', 'message': 'Command queue full or error'}), 500
+            return jsonify({
+                'status': 'error',
+                'message': f'Arduino communication failed: {response}'
+            }), 500
             
     except ValueError:
         return jsonify({'status': 'error', 'message': 'Invalid speed value'}), 400
@@ -829,10 +847,10 @@ def set_individual_motor_speed(motor_num):
         logger.error(f"Motor {motor_num} speed error: {e}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
-# Group Motor Control Routes
+# Group Motor Control Routes - SYNC COMMANDS
 @app.route('/api/levitation/start', methods=['POST'])
 def start_levitation_group():
-    """Start levitation group (Motors 1,2,3,4)"""
+    """Start levitation group (Motors 1,2,3,4) - SYNC COMMAND"""
     if not arduino_controller or not arduino_controller.is_connected:
         return jsonify({'status': 'error', 'message': 'Arduino not connected'}), 503
     
@@ -850,27 +868,37 @@ def start_levitation_group():
             return jsonify({'status': 'error', 'message': 'Speed must be 0-100'}), 400
         
         command = f"LEV_GROUP:START:{speed}"
-        success = arduino_controller.send_command_async(command)
+        success, response = arduino_controller.send_command_sync(command, timeout=5.0)
         
-        if success:
-            with state_lock:
-                group_speeds['levitation'] = speed
-                for i in range(1, 5):  # Motors 1,2,3,4
-                    motor_states[i] = True
-                    individual_motor_speeds[i] = speed
-            
-            logger.info(f"Levitation group (Motors 1,2,3,4) started at {speed}%")
-            return jsonify({
-                'status': 'success',
-                'action': 'start',
-                'speed': speed,
-                'motors': list(range(1, 5)),
-                'pins': [2, 4, 5, 6],
-                'message': 'Levitation group started',
-                'group': 'levitation'
-            })
+        if success and response:
+            if "LEV_GROUP_STARTED" in response:
+                with state_lock:
+                    group_speeds['levitation'] = speed
+                    for i in range(1, 5):
+                        motor_states[i] = True
+                        individual_motor_speeds[i] = speed
+                
+                logger.info(f"Levitation group (Motors 1,2,3,4) started at {speed}%")
+                return jsonify({
+                    'status': 'success',
+                    'action': 'start',
+                    'speed': speed,
+                    'motors': list(range(1, 5)),
+                    'pins': [2, 4, 5, 6],
+                    'message': 'Levitation group started',
+                    'group': 'levitation',
+                    'arduino_response': response
+                })
+            else:
+                return jsonify({
+                    'status': 'error',
+                    'message': f'Levitation start failed: {response}'
+                }), 500
         else:
-            return jsonify({'status': 'error', 'message': 'Command queue full or error'}), 500
+            return jsonify({
+                'status': 'error',
+                'message': f'Arduino communication failed: {response}'
+            }), 500
             
     except ValueError:
         return jsonify({'status': 'error', 'message': 'Invalid speed value'}), 400
@@ -880,32 +908,42 @@ def start_levitation_group():
 
 @app.route('/api/levitation/stop', methods=['POST'])
 def stop_levitation_group():
-    """Stop levitation group"""
+    """Stop levitation group - SYNC COMMAND"""
     if not arduino_controller or not arduino_controller.is_connected:
         return jsonify({'status': 'error', 'message': 'Arduino not connected'}), 503
     
     try:
         command = "LEV_GROUP:STOP"
-        success = arduino_controller.send_command_async(command)
+        success, response = arduino_controller.send_command_sync(command, timeout=5.0)
         
-        if success:
-            with state_lock:
-                group_speeds['levitation'] = 0
-                for i in range(1, 5):  # Motors 1,2,3,4
-                    motor_states[i] = False
-                    individual_motor_speeds[i] = 0
-            
-            logger.info("Levitation group stopped")
-            return jsonify({
-                'status': 'success',
-                'action': 'stop',
-                'speed': 0,
-                'motors': list(range(1, 5)),
-                'message': 'Levitation group stopped',
-                'group': 'levitation'
-            })
+        if success and response:
+            if "LEV_GROUP_STOPPED" in response:
+                with state_lock:
+                    group_speeds['levitation'] = 0
+                    for i in range(1, 5):
+                        motor_states[i] = False
+                        individual_motor_speeds[i] = 0
+                
+                logger.info("Levitation group stopped")
+                return jsonify({
+                    'status': 'success',
+                    'action': 'stop',
+                    'speed': 0,
+                    'motors': list(range(1, 5)),
+                    'message': 'Levitation group stopped',
+                    'group': 'levitation',
+                    'arduino_response': response
+                })
+            else:
+                return jsonify({
+                    'status': 'error',
+                    'message': f'Levitation stop failed: {response}'
+                }), 500
         else:
-            return jsonify({'status': 'error', 'message': 'Command queue full or error'}), 500
+            return jsonify({
+                'status': 'error',
+                'message': f'Arduino communication failed: {response}'
+            }), 500
             
     except Exception as e:
         logger.error(f"Levitation stop error: {e}")
@@ -913,7 +951,7 @@ def stop_levitation_group():
 
 @app.route('/api/levitation/speed', methods=['POST'])
 def set_levitation_speed():
-    """Set levitation group speed"""
+    """Set levitation group speed - SYNC COMMAND"""
     if not arduino_controller or not arduino_controller.is_connected:
         return jsonify({'status': 'error', 'message': 'Arduino not connected'}), 503
     
@@ -934,25 +972,35 @@ def set_levitation_speed():
             return jsonify({'status': 'error', 'message': 'Speed must be 0-100'}), 400
         
         command = f"LEV_GROUP:SPEED:{speed}"
-        success = arduino_controller.send_command_async(command)
+        success, response = arduino_controller.send_command_sync(command, timeout=5.0)
         
-        if success:
-            with state_lock:
-                group_speeds['levitation'] = speed
-                for i in range(1, 5):  # Motors 1,2,3,4
-                    if motor_states[i]:
-                        individual_motor_speeds[i] = speed
-            
-            logger.info(f"Levitation group speed set to {speed}%")
-            return jsonify({
-                'status': 'success',
-                'speed': speed,
-                'motors': list(range(1, 5)),
-                'message': 'Levitation group speed updated',
-                'group': 'levitation'
-            })
+        if success and response:
+            if "LEV_GROUP_SPEED" in response:
+                with state_lock:
+                    group_speeds['levitation'] = speed
+                    for i in range(1, 5):
+                        if motor_states[i]:
+                            individual_motor_speeds[i] = speed
+                
+                logger.info(f"Levitation group speed set to {speed}%")
+                return jsonify({
+                    'status': 'success',
+                    'speed': speed,
+                    'motors': list(range(1, 5)),
+                    'message': 'Levitation group speed updated',
+                    'group': 'levitation',
+                    'arduino_response': response
+                })
+            else:
+                return jsonify({
+                    'status': 'error',
+                    'message': f'Levitation speed failed: {response}'
+                }), 500
         else:
-            return jsonify({'status': 'error', 'message': 'Command queue full or error'}), 500
+            return jsonify({
+                'status': 'error',
+                'message': f'Arduino communication failed: {response}'
+            }), 500
             
     except ValueError:
         return jsonify({'status': 'error', 'message': 'Invalid speed value'}), 400
@@ -962,7 +1010,7 @@ def set_levitation_speed():
 
 @app.route('/api/thrust/start', methods=['POST'])
 def start_thrust_group():
-    """Start thrust group (Motors 5,6 on pins 3,7)"""
+    """Start thrust group (Motors 5,6) - SYNC COMMAND"""
     if not arduino_controller or not arduino_controller.is_connected:
         return jsonify({'status': 'error', 'message': 'Arduino not connected'}), 503
     
@@ -980,27 +1028,37 @@ def start_thrust_group():
             return jsonify({'status': 'error', 'message': 'Speed must be 0-100'}), 400
         
         command = f"THR_GROUP:START:{speed}"
-        success = arduino_controller.send_command_async(command)
+        success, response = arduino_controller.send_command_sync(command, timeout=5.0)
         
-        if success:
-            with state_lock:
-                group_speeds['thrust'] = speed
-                for i in range(5, 7):  # Motors 5,6
-                    motor_states[i] = True
-                    individual_motor_speeds[i] = speed
-            
-            logger.info(f"Thrust group (Motors 5,6 on pins 3,7) started at {speed}%")
-            return jsonify({
-                'status': 'success',
-                'action': 'start',
-                'speed': speed,
-                'motors': list(range(5, 7)),
-                'pins': [3, 7],
-                'message': 'Thrust group started',
-                'group': 'thrust'
-            })
+        if success and response:
+            if "THR_GROUP_STARTED" in response:
+                with state_lock:
+                    group_speeds['thrust'] = speed
+                    for i in range(5, 7):
+                        motor_states[i] = True
+                        individual_motor_speeds[i] = speed
+                
+                logger.info(f"Thrust group (Motors 5,6) started at {speed}%")
+                return jsonify({
+                    'status': 'success',
+                    'action': 'start',
+                    'speed': speed,
+                    'motors': list(range(5, 7)),
+                    'pins': [3, 7],
+                    'message': 'Thrust group started',
+                    'group': 'thrust',
+                    'arduino_response': response
+                })
+            else:
+                return jsonify({
+                    'status': 'error',
+                    'message': f'Thrust start failed: {response}'
+                }), 500
         else:
-            return jsonify({'status': 'error', 'message': 'Command queue full or error'}), 500
+            return jsonify({
+                'status': 'error',
+                'message': f'Arduino communication failed: {response}'
+            }), 500
             
     except ValueError:
         return jsonify({'status': 'error', 'message': 'Invalid speed value'}), 400
@@ -1010,32 +1068,42 @@ def start_thrust_group():
 
 @app.route('/api/thrust/stop', methods=['POST'])
 def stop_thrust_group():
-    """Stop thrust group"""
+    """Stop thrust group - SYNC COMMAND"""
     if not arduino_controller or not arduino_controller.is_connected:
         return jsonify({'status': 'error', 'message': 'Arduino not connected'}), 503
     
     try:
         command = "THR_GROUP:STOP"
-        success = arduino_controller.send_command_async(command)
+        success, response = arduino_controller.send_command_sync(command, timeout=5.0)
         
-        if success:
-            with state_lock:
-                group_speeds['thrust'] = 0
-                for i in range(5, 7):  # Motors 5,6
-                    motor_states[i] = False
-                    individual_motor_speeds[i] = 0
-            
-            logger.info("Thrust group stopped")
-            return jsonify({
-                'status': 'success',
-                'action': 'stop',
-                'speed': 0,
-                'motors': list(range(5, 7)),
-                'message': 'Thrust group stopped',
-                'group': 'thrust'
-            })
+        if success and response:
+            if "THR_GROUP_STOPPED" in response:
+                with state_lock:
+                    group_speeds['thrust'] = 0
+                    for i in range(5, 7):
+                        motor_states[i] = False
+                        individual_motor_speeds[i] = 0
+                
+                logger.info("Thrust group stopped")
+                return jsonify({
+                    'status': 'success',
+                    'action': 'stop',
+                    'speed': 0,
+                    'motors': list(range(5, 7)),
+                    'message': 'Thrust group stopped',
+                    'group': 'thrust',
+                    'arduino_response': response
+                })
+            else:
+                return jsonify({
+                    'status': 'error',
+                    'message': f'Thrust stop failed: {response}'
+                }), 500
         else:
-            return jsonify({'status': 'error', 'message': 'Command queue full or error'}), 500
+            return jsonify({
+                'status': 'error',
+                'message': f'Arduino communication failed: {response}'
+            }), 500
             
     except Exception as e:
         logger.error(f"Thrust stop error: {e}")
@@ -1043,7 +1111,7 @@ def stop_thrust_group():
 
 @app.route('/api/thrust/speed', methods=['POST'])
 def set_thrust_speed():
-    """Set thrust group speed"""
+    """Set thrust group speed - SYNC COMMAND"""
     if not arduino_controller or not arduino_controller.is_connected:
         return jsonify({'status': 'error', 'message': 'Arduino not connected'}), 503
     
@@ -1064,25 +1132,35 @@ def set_thrust_speed():
             return jsonify({'status': 'error', 'message': 'Speed must be 0-100'}), 400
         
         command = f"THR_GROUP:SPEED:{speed}"
-        success = arduino_controller.send_command_async(command)
+        success, response = arduino_controller.send_command_sync(command, timeout=5.0)
         
-        if success:
-            with state_lock:
-                group_speeds['thrust'] = speed
-                for i in range(5, 7):  # Motors 5,6
-                    if motor_states[i]:
-                        individual_motor_speeds[i] = speed
-            
-            logger.info(f"Thrust group speed set to {speed}%")
-            return jsonify({
-                'status': 'success',
-                'speed': speed,
-                'motors': list(range(5, 7)),
-                'message': 'Thrust group speed updated',
-                'group': 'thrust'
-            })
+        if success and response:
+            if "THR_GROUP_SPEED" in response:
+                with state_lock:
+                    group_speeds['thrust'] = speed
+                    for i in range(5, 7):
+                        if motor_states[i]:
+                            individual_motor_speeds[i] = speed
+                
+                logger.info(f"Thrust group speed set to {speed}%")
+                return jsonify({
+                    'status': 'success',
+                    'speed': speed,
+                    'motors': list(range(5, 7)),
+                    'message': 'Thrust group speed updated',
+                    'group': 'thrust',
+                    'arduino_response': response
+                })
+            else:
+                return jsonify({
+                    'status': 'error',
+                    'message': f'Thrust speed failed: {response}'
+                }), 500
         else:
-            return jsonify({'status': 'error', 'message': 'Command queue full or error'}), 500
+            return jsonify({
+                'status': 'error',
+                'message': f'Arduino communication failed: {response}'
+            }), 500
             
     except ValueError:
         return jsonify({'status': 'error', 'message': 'Invalid speed value'}), 400
@@ -1090,10 +1168,10 @@ def set_thrust_speed():
         logger.error(f"Thrust speed error: {e}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
-# Brake Control Routes
+# Brake Control Routes - SYNC COMMANDS
 @app.route('/api/brake/<action>', methods=['POST'])
 def control_brake(action):
-    """Control software brake system"""
+    """Control software brake system - SYNC COMMAND"""
     if not arduino_controller or not arduino_controller.is_connected:
         return jsonify({'status': 'error', 'message': 'Arduino not connected'}), 503
     
@@ -1104,32 +1182,37 @@ def control_brake(action):
         command = "BRAKE_ON" if action == 'on' else "BRAKE_OFF"
         success, response = arduino_controller.send_command_sync(command, timeout=3.0)
         
-        if success:
-            with state_lock:
-                system_state['brake_active'] = (action == 'on')
+        if success and response:
+            if "BRAKE_ON" in response or "BRAKE_OFF" in response:
+                with state_lock:
+                    system_state['brake_active'] = (action == 'on')
+                    
+                    if system_state['brake_active']:
+                        for i in range(1, 7):
+                            motor_states[i] = False
+                            individual_motor_speeds[i] = 0
+                        group_speeds['levitation'] = 0
+                        group_speeds['thrust'] = 0
                 
-                if system_state['brake_active']:
-                    # Software brake ON - stop all motors
-                    for i in range(1, 7):
-                        motor_states[i] = False
-                        individual_motor_speeds[i] = 0
-                    group_speeds['levitation'] = 0
-                    group_speeds['thrust'] = 0
-            
-            status = 'activated' if system_state['brake_active'] else 'deactivated'
-            logger.info(f"Software brake {status}")
-            
-            return jsonify({
-                'status': 'success',
-                'action': action,
-                'brake_active': system_state['brake_active'],
-                'message': f'Software brake {status}',
-                'response': response.strip()
-            })
+                status = 'activated' if system_state['brake_active'] else 'deactivated'
+                logger.info(f"Software brake {status}")
+                
+                return jsonify({
+                    'status': 'success',
+                    'action': action,
+                    'brake_active': system_state['brake_active'],
+                    'message': f'Software brake {status}',
+                    'arduino_response': response
+                })
+            else:
+                return jsonify({
+                    'status': 'error',
+                    'message': f'Brake control failed: {response}'
+                }), 500
         else:
             return jsonify({
                 'status': 'error', 
-                'message': f'Arduino did not respond properly: {response}'
+                'message': f'Arduino communication failed: {response}'
             }), 500
             
     except Exception as e:
@@ -1141,7 +1224,7 @@ def control_brake(action):
 
 @app.route('/api/relay-brake/<action>', methods=['POST'])
 def control_relay_brake(action):
-    """Control relay brake system"""
+    """Control relay brake system - SYNC COMMAND"""
     if not arduino_controller or not arduino_controller.is_connected:
         return jsonify({'status': 'error', 'message': 'Arduino not connected'}), 503
     
@@ -1152,34 +1235,39 @@ def control_relay_brake(action):
         command = "RELAY_BRAKE_ON" if action == 'on' else "RELAY_BRAKE_OFF"
         success, response = arduino_controller.send_command_sync(command, timeout=3.0)
         
-        if success:
-            with state_lock:
-                system_state['relay_brake_active'] = (action == 'on')
+        if success and response:
+            if "RELAY_BRAKE:" in response:
+                with state_lock:
+                    system_state['relay_brake_active'] = (action == 'on')
+                    
+                    if not system_state['relay_brake_active']:
+                        system_state['armed'] = False
+                        for i in range(1, 7):
+                            motor_states[i] = False
+                            individual_motor_speeds[i] = 0
+                        group_speeds['levitation'] = 0
+                        group_speeds['thrust'] = 0
                 
-                if not system_state['relay_brake_active']:
-                    # Relay brake OFF - stop all motors and disarm system
-                    system_state['armed'] = False
-                    for i in range(1, 7):
-                        motor_states[i] = False
-                        individual_motor_speeds[i] = 0
-                    group_speeds['levitation'] = 0
-                    group_speeds['thrust'] = 0
-            
-            status = 'activated' if system_state['relay_brake_active'] else 'deactivated'
-            logger.info(f"Relay brake {status}")
-            
-            return jsonify({
-                'status': 'success',
-                'action': action,
-                'relay_brake_active': system_state['relay_brake_active'],
-                'system_disarmed': not system_state['relay_brake_active'],
-                'message': f'Relay brake {status}',
-                'response': response.strip()
-            })
+                status = 'activated' if system_state['relay_brake_active'] else 'deactivated'
+                logger.info(f"Relay brake {status}")
+                
+                return jsonify({
+                    'status': 'success',
+                    'action': action,
+                    'relay_brake_active': system_state['relay_brake_active'],
+                    'system_disarmed': not system_state['relay_brake_active'],
+                    'message': f'Relay brake {status}',
+                    'arduino_response': response
+                })
+            else:
+                return jsonify({
+                    'status': 'error',
+                    'message': f'Relay brake failed: {response}'
+                }), 500
         else:
             return jsonify({
                 'status': 'error', 
-                'message': f'Arduino did not respond properly: {response}'
+                'message': f'Arduino communication failed: {response}'
             }), 500
             
     except Exception as e:
@@ -1192,7 +1280,7 @@ def control_relay_brake(action):
 # Emergency Stop Route
 @app.route('/api/emergency-stop', methods=['POST'])
 def emergency_stop():
-    """Emergency stop all systems"""
+    """Emergency stop all systems - SYNC COMMAND"""
     try:
         # Immediate local emergency actions
         with state_lock:
@@ -1208,7 +1296,9 @@ def emergency_stop():
         # Send emergency stop to Arduino if connected
         if arduino_controller and arduino_controller.is_connected:
             try:
-                arduino_controller.send_command_async("EMERGENCY_STOP")
+                success, response = arduino_controller.send_command_sync("EMERGENCY_STOP", timeout=2.0)
+                if success:
+                    logger.info(f"Emergency stop sent to Arduino: {response}")
             except Exception as e:
                 logger.warning(f"Could not send emergency stop to Arduino: {e}")
         
@@ -1319,10 +1409,10 @@ def ping():
             'active_motors': active_motors,
             'uptime_seconds': int(uptime_seconds),
             'motor_pins': {
-                'thrust': [3, 7],        # Motors 5,6
-                'levitation': [2, 4, 5, 6]  # Motors 1,2,3,4
+                'thrust': [3, 7],
+                'levitation': [2, 4, 5, 6]
             },
-            'version': '3.2-production-complete',
+            'version': '3.2-fixed-sync',
             'port': arduino_controller.port if arduino_controller else None
         })
         
@@ -1388,7 +1478,6 @@ def background_monitor():
                 else:
                     logger.warning("Max reconnection attempts reached, waiting...")
             
-            # Clean up command queue if it gets too full
             if arduino_controller and arduino_controller.command_queue.qsize() > 50:
                 logger.warning("Command queue getting full, clearing old commands")
                 try:
@@ -1398,7 +1487,7 @@ def background_monitor():
                 except queue.Empty:
                     pass
             
-            shutdown_event.wait(30)  # Wait 30 seconds or until shutdown
+            shutdown_event.wait(30)
             
         except Exception as e:
             logger.error(f"Background monitor error: {e}")
@@ -1416,10 +1505,8 @@ def signal_handler(sig, frame):
     logger.info("Shutdown signal received, initiating graceful shutdown...")
     
     try:
-        # Set shutdown event
         shutdown_event.set()
         
-        # Emergency stop if system is armed
         if system_state.get('armed', False):
             logger.info("System is armed - performing emergency stop...")
             try:
@@ -1427,12 +1514,10 @@ def signal_handler(sig, frame):
             except Exception as e:
                 logger.error(f"Emergency stop during shutdown error: {e}")
         
-        # Disconnect Arduino safely
         if arduino_controller:
             logger.info("Disconnecting Arduino...")
             arduino_controller.disconnect()
         
-        # Wait for background threads to finish
         logger.info("Waiting for background threads to finish...")
         if monitor_thread.is_alive():
             monitor_thread.join(timeout=5.0)
@@ -1442,7 +1527,6 @@ def signal_handler(sig, frame):
     except Exception as e:
         logger.error(f"Shutdown error: {e}")
     finally:
-        # Force exit
         sys.exit(0)
 
 # Register signal handlers
@@ -1451,11 +1535,10 @@ signal.signal(signal.SIGTERM, signal_handler)
 
 if __name__ == '__main__':
     logger.info("=" * 60)
-    logger.info("SpectraLoop Backend Final v3.2 - Production Complete")
+    logger.info("SpectraLoop Backend Final v3.2 - FIXED SYNC COMMANDS")
     logger.info("=" * 60)
     
     try:
-        # System information
         if arduino_controller and arduino_controller.is_connected:
             logger.info(f"Arduino Status: Connected")
             logger.info(f"Arduino Port: {arduino_controller.port}")
@@ -1466,7 +1549,11 @@ if __name__ == '__main__':
         logger.info("Motor Pin Mapping:")
         logger.info("   Thrust Motors: M5->Pin3, M6->Pin7")
         logger.info("   Levitation Motors: M1->Pin2, M2->Pin4, M3->Pin5, M4->Pin6")
-        logger.info("   Relay Brake: Pin8")
+        logger.info("   Relay Brake: Pin11")
+        
+        logger.info("FIXED: All motor commands now use SYNC communication")
+        logger.info("FIXED: Arduino responses are properly validated")
+        logger.info("FIXED: Motor states updated only after Arduino confirmation")
         
         logger.info("Server Configuration:")
         logger.info("   Host: 0.0.0.0")
@@ -1474,36 +1561,15 @@ if __name__ == '__main__':
         logger.info("   Debug: False")
         logger.info("   Threaded: True")
         
-        logger.info("Available API Endpoints:")
-        logger.info("   GET  /api/status - System status")
-        logger.info("   GET  /api/ping - Health check")
-        logger.info("   GET  /api/test-connection - Test Arduino connection")
-        logger.info("   POST /api/system/arm - Arm system")
-        logger.info("   POST /api/system/disarm - Disarm system")
-        logger.info("   POST /api/motor/<num>/start - Start motor")
-        logger.info("   POST /api/motor/<num>/stop - Stop motor")
-        logger.info("   POST /api/motor/<num>/speed - Set motor speed")
-        logger.info("   POST /api/levitation/start - Start levitation group (M1,2,3,4)")
-        logger.info("   POST /api/levitation/stop - Stop levitation group")
-        logger.info("   POST /api/levitation/speed - Set levitation group speed")
-        logger.info("   POST /api/thrust/start - Start thrust group (M5,6)")
-        logger.info("   POST /api/thrust/stop - Stop thrust group")
-        logger.info("   POST /api/thrust/speed - Set thrust group speed")
-        logger.info("   POST /api/brake/on|off - Software brake control")
-        logger.info("   POST /api/relay-brake/on|off - Relay brake control")
-        logger.info("   POST /api/emergency-stop - Emergency stop all systems")
-        logger.info("   POST /api/reconnect - Reconnect Arduino")
-        
         logger.info("=" * 60)
         logger.info("Starting Flask server...")
         
-        # Start Flask application
         app.run(
             host='0.0.0.0', 
             port=5001, 
             debug=False, 
             threaded=True,
-            use_reloader=False  # Prevent double initialization
+            use_reloader=False
         )
         
     except KeyboardInterrupt:
