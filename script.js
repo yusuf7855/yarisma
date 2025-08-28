@@ -1,13 +1,13 @@
 /*
- * SpectraLoop Frontend JavaScript DUAL TEMPERATURE v3.5 - Ultra-fast Updates
- * Dual DS18B20 sensor monitoring with redundant safety
- * Individual sensor tracking + combined safety logic
+ * SpectraLoop Frontend JavaScript DUAL TEMPERATURE + REFLECTOR COUNTER v3.6
+ * Dual DS18B20 sensor monitoring + Omron reflector counting system
+ * Individual sensor + reflector tracking + combined safety logic + ultra-fast updates
  */
 
-// Configuration - DUAL SENSOR OPTIMIZED
+// Configuration - DUAL SENSOR + REFLECTOR OPTIMIZED
 const BACKEND_URL = 'http://192.168.241.82:5001';
 
-// System State Management - DUAL TEMPERATURE ENHANCED
+// System State Management - DUAL TEMPERATURE + REFLECTOR ENHANCED
 let systemState = {
     armed: false,
     brakeActive: false,
@@ -36,10 +36,30 @@ let systemState = {
         sensor_failure_count: 0,     // Failure tracking
         temperature_difference: 0.0,  // Difference between sensors
         dual_sensor_mode: true       // Operating in dual mode
+    },
+    // NEW: REFLECTOR SYSTEM STATE
+    reflector: {
+        count: 0,                    // Total reflector count
+        voltage: 5.0,                // Current sensor voltage
+        state: false,                // Current detection state
+        average_speed: 0.0,          // Average speed (reflectors/min)
+        instant_speed: 0.0,          // Instantaneous speed
+        last_update: null,           // Last update timestamp
+        system_active: true,         // Reflector system status
+        detections: 0,               // Total detection events
+        read_frequency: 0.0,         // Read frequency (Hz)
+        max_speed_recorded: 0.0,     // Maximum speed recorded
+        session_count: 0,            // Session counter
+        daily_count: 0,              // Daily counter
+        total_runtime: 0.0,          // Runtime in minutes
+        detection_rate: 0.0,         // Detections per minute
+        connected: true,             // Connection status
+        calibration_status: 'not_calibrated', // Calibration status
+        performance_indicator: 'optimal'      // Performance indicator
     }
 };
 
-// Application State - DUAL SENSOR OPTIMIZED
+// Application State - DUAL SENSOR + REFLECTOR OPTIMIZED
 let appState = {
     requestCount: 0,
     errorCount: 0,
@@ -48,36 +68,49 @@ let appState = {
     commandLog: [],
     statusUpdateInterval: null,
     temperatureUpdateInterval: null,
-    realtimeTemperatureInterval: null,  // NEW: Ultra-fast realtime updates
+    realtimeTemperatureInterval: null,  // Ultra-fast realtime updates
+    reflectorUpdateInterval: null,      // NEW: Ultra-fast reflector updates
+    reflectorStatsInterval: null,       // NEW: Reflector statistics
     isInitialized: false,
     lastTempAlarmNotified: false,
+    lastReflectorCount: 0,              // NEW: Track reflector changes
     temperatureHistory: [],
+    reflectorHistory: [],               // NEW: Reflector history
     tempWarningShown: false,
-    sensorDifferenceWarningShown: false, // NEW: Track sensor diff warnings
+    sensorDifferenceWarningShown: false,
+    reflectorAnomalyWarningShown: false, // NEW: Reflector anomaly warning
     performanceStats: {
         temperatureUpdatesCount: 0,
+        reflectorUpdatesCount: 0,       // NEW: Reflector update count
         lastTempUpdateTime: 0,
+        lastReflectorUpdateTime: 0,     // NEW: Last reflector update
         averageUpdateFrequency: 0,
-        sensor1UpdatesCount: 0,      // NEW: Individual sensor stats
-        sensor2UpdatesCount: 0,      // NEW: Individual sensor stats
-        dualSensorUpdatesCount: 0    // NEW: Dual update stats
+        averageReflectorFrequency: 0,   // NEW: Average reflector frequency
+        sensor1UpdatesCount: 0,
+        sensor2UpdatesCount: 0,
+        dualSensorUpdatesCount: 0,
+        reflectorDetectionCount: 0      // NEW: Detection events count
     }
 };
 
-// Constants - DUAL SENSOR OPTIMIZED
+// Constants - DUAL SENSOR + REFLECTOR OPTIMIZED
 const CONFIG = {
     REQUEST_THROTTLE: 25,
     MAX_RETRIES: 3,
     STATUS_UPDATE_INTERVAL: 1500,        // General status
     TEMPERATURE_UPDATE_INTERVAL: 800,    // Dual temp updates
-    REALTIME_TEMP_INTERVAL: 400,         // NEW: Ultra-fast realtime
+    REALTIME_TEMP_INTERVAL: 400,         // Ultra-fast realtime temp
+    REFLECTOR_UPDATE_INTERVAL: 300,      // NEW: Ultra-fast reflector updates
+    REFLECTOR_STATS_INTERVAL: 2000,      // NEW: Reflector statistics updates
     CONNECTION_TIMEOUT: 4000,
     MAX_LOG_ENTRIES: 30,
     NOTIFICATION_TIMEOUT: 4000,
     TEMP_SAFE_THRESHOLD: 50,
     TEMP_WARNING_THRESHOLD: 45,
     TEMP_ALARM_THRESHOLD: 55,
-    TEMP_DIFF_WARNING_THRESHOLD: 5.0,    // NEW: Sensor difference warning
+    TEMP_DIFF_WARNING_THRESHOLD: 5.0,
+    REFLECTOR_ANOMALY_THRESHOLD: 10000,  // NEW: Reflector anomaly detection
+    REFLECTOR_SPEED_WARNING: 1000,       // NEW: High speed warning (rpm)
     PERFORMANCE_LOG_INTERVAL: 10000
 };
 
@@ -124,9 +157,497 @@ class Utils {
     static clamp(value, min, max) {
         return Math.min(Math.max(value, min), max);
     }
+
+    static formatNumber(value, decimals = 1) {
+        return parseFloat(value).toFixed(decimals);
+    }
+
+    static calculateEfficiency(current, maximum) {
+        if (maximum === 0) return 100;
+        return Math.min(100, (current / maximum) * 100);
+    }
 }
 
-// DUAL Temperature Manager - COMPLETELY ENHANCED
+// NEW: REFLECTOR SYSTEM MANAGER
+class ReflectorManager {
+    static updateReflectorDisplay(reflectorData) {
+        if (!reflectorData) return;
+        
+        // Extract reflector data
+        const count = reflectorData.count || 0;
+        const voltage = reflectorData.voltage || 5.0;
+        const state = reflectorData.state || false;
+        const averageSpeed = reflectorData.average_speed || 0.0;
+        const instantSpeed = reflectorData.instant_speed || 0.0;
+        const systemActive = reflectorData.system_active !== undefined ? reflectorData.system_active : true;
+        const readFrequency = reflectorData.read_frequency || 0.0;
+        const detections = reflectorData.detections || 0;
+        const sessionCount = reflectorData.session_count || 0;
+        const dailyCount = reflectorData.daily_count || 0;
+        const totalRuntime = reflectorData.total_runtime || 0.0;
+        const detectionRate = reflectorData.detection_rate || 0.0;
+        const maxSpeedRecorded = reflectorData.max_speed_recorded || 0.0;
+        
+        // Update performance stats
+        appState.performanceStats.reflectorUpdatesCount++;
+        const now = Date.now();
+        if (appState.performanceStats.lastReflectorUpdateTime > 0) {
+            const timeDiff = (now - appState.performanceStats.lastReflectorUpdateTime) / 1000;
+            appState.performanceStats.averageReflectorFrequency = 1 / timeDiff;
+        }
+        appState.performanceStats.lastReflectorUpdateTime = now;
+        
+        // Update main reflector displays
+        this.updateMainReflectorElements(count, voltage, state, averageSpeed, instantSpeed);
+        this.updateReflectorDetails(readFrequency, detections, sessionCount, dailyCount, totalRuntime, detectionRate, maxSpeedRecorded);
+        this.updateReflectorStatus(systemActive, voltage, state);
+        this.updateReflectorConnectionStatus(systemActive);
+        this.updateReflectorStatistics(count, averageSpeed, totalRuntime);
+        this.updateReflectorCorrelation(count, averageSpeed);
+        this.updateReflectorLastUpdate();
+        
+        // Store reflector data in system state
+        systemState.reflector = {
+            count: count,
+            voltage: voltage,
+            state: state,
+            average_speed: averageSpeed,
+            instant_speed: instantSpeed,
+            last_update: new Date(),
+            system_active: systemActive,
+            detections: detections,
+            read_frequency: readFrequency,
+            max_speed_recorded: maxSpeedRecorded,
+            session_count: sessionCount,
+            daily_count: dailyCount,
+            total_runtime: totalRuntime,
+            detection_rate: detectionRate,
+            connected: systemActive,
+            calibration_status: reflectorData.calibration_status || 'not_calibrated',
+            performance_indicator: this.calculatePerformanceIndicator(averageSpeed, readFrequency, detections)
+        };
+        
+        // Handle reflector notifications and warnings
+        this.handleReflectorNotifications(count, averageSpeed, systemActive, state);
+        
+        // Update reflector history
+        this.updateReflectorHistory(count, averageSpeed, instantSpeed);
+    }
+    
+    static updateMainReflectorElements(count, voltage, state, averageSpeed, instantSpeed) {
+        // Update main count display
+        const countEl = document.getElementById('reflector-count');
+        if (countEl && countEl.textContent !== count.toString()) {
+            countEl.textContent = count;
+            
+            // Add animation for count changes
+            if (count > appState.lastReflectorCount) {
+                countEl.style.animation = 'pulse 0.3s ease-in-out';
+                setTimeout(() => {
+                    countEl.style.animation = '';
+                }, 300);
+                appState.performanceStats.reflectorDetectionCount++;
+            }
+            appState.lastReflectorCount = count;
+        }
+        
+        // Update voltage display
+        const voltageEl = document.getElementById('reflector-voltage');
+        if (voltageEl) {
+            voltageEl.textContent = `${voltage.toFixed(2)}V`;
+        }
+        
+        // Update detection state
+        const detectionStateEl = document.getElementById('reflector-detection-state');
+        if (detectionStateEl) {
+            detectionStateEl.textContent = state ? 'Algılandı' : 'Temiz';
+            detectionStateEl.style.color = state ? '#ff6b35' : '#00ff88';
+        }
+        
+        // Update average speed
+        const avgSpeedEl = document.getElementById('reflector-avg-speed');
+        if (avgSpeedEl) {
+            avgSpeedEl.textContent = averageSpeed.toFixed(1);
+        }
+        
+        // Update instant speed
+        const instSpeedEl = document.getElementById('reflector-instant-speed');
+        if (instSpeedEl) {
+            instSpeedEl.textContent = `${instantSpeed.toFixed(1)} ref/dk`;
+        }
+        
+        // Update reflector system status
+        const systemStatusEl = document.getElementById('reflector-system-status');
+        if (systemStatusEl) {
+            systemStatusEl.textContent = systemState.reflector.system_active ? 'Aktif' : 'Pasif';
+            systemStatusEl.style.color = systemState.reflector.system_active ? '#00ff88' : '#ff4757';
+        }
+    }
+    
+    static updateReflectorDetails(readFrequency, detections, sessionCount, dailyCount, totalRuntime, detectionRate, maxSpeedRecorded) {
+        // Update detailed values
+        const updates = {
+            'reflector-read-freq': `${readFrequency.toFixed(1)} Hz`,
+            'reflector-session-count': sessionCount,
+            'reflector-daily-count': dailyCount,
+            'reflector-runtime': `${totalRuntime.toFixed(1)} dk`,
+            'reflector-max-speed': `${maxSpeedRecorded.toFixed(1)} ref/dk`,
+            'reflector-detection-rate': `${detectionRate.toFixed(1)}/dk`,
+            'reflector-total-detections': detections
+        };
+        
+        Object.entries(updates).forEach(([id, value]) => {
+            const element = document.getElementById(id);
+            if (element && element.textContent !== value.toString()) {
+                element.textContent = value;
+            }
+        });
+    }
+    
+    static updateReflectorStatus(systemActive, voltage, state) {
+        // Update system status indicator
+        const statusIndicatorEl = document.getElementById('reflector-status');
+        if (statusIndicatorEl) {
+            const shouldShow = systemActive && voltage > 4.0;
+            statusIndicatorEl.style.display = shouldShow ? 'block' : 'none';
+        }
+        
+        // Update reflector section styling based on status
+        const reflectorSectionEl = document.getElementById('reflector-section');
+        if (reflectorSectionEl) {
+            reflectorSectionEl.className = 'reflector-section';
+            
+            if (!systemActive) {
+                reflectorSectionEl.classList.add('inactive');
+            } else if (voltage < 2.0) {
+                reflectorSectionEl.classList.add('error');
+            } else if (state) {
+                reflectorSectionEl.classList.add('detecting');
+            }
+        }
+        
+        // Update performance indicator
+        const performanceEl = document.getElementById('performance-indicator');
+        if (performanceEl) {
+            performanceEl.textContent = systemState.reflector.performance_indicator;
+            const color = this.getPerformanceColor(systemState.reflector.performance_indicator);
+            performanceEl.style.color = color;
+        }
+    }
+    
+    static updateReflectorConnectionStatus(systemActive) {
+        // Update connection status dot
+        const connectionDotEl = document.getElementById('reflector-dot');
+        const connectionTextEl = document.getElementById('reflector-connection-text');
+        const connectionMiniEl = document.getElementById('reflector-connection-mini');
+        
+        if (connectionDotEl) {
+            connectionDotEl.className = systemActive ? 'connection-dot connected' : 'connection-dot';
+        }
+        if (connectionTextEl) {
+            connectionTextEl.textContent = systemActive ? 'Bağlı' : 'Bağlantısız';
+        }
+        if (connectionMiniEl) {
+            connectionMiniEl.textContent = '●';
+            connectionMiniEl.style.color = systemActive ? '#00ff88' : '#ff4757';
+        }
+        
+        // Update system connection status
+        systemState.reflector.connected = systemActive;
+    }
+    
+    static updateReflectorStatistics(count, averageSpeed, totalRuntime) {
+        // Update statistics displays
+        const statisticsUpdates = {
+            'stats-total-count': count,
+            'stats-avg-speed': `${averageSpeed.toFixed(1)} ref/dk`,
+            'stats-runtime': Utils.formatUptime(totalRuntime * 60),
+            'stats-efficiency': `${Utils.calculateEfficiency(count, count + 10).toFixed(0)}%`
+        };
+        
+        Object.entries(statisticsUpdates).forEach(([id, value]) => {
+            const element = document.getElementById(id);
+            if (element && element.textContent !== value.toString()) {
+                element.textContent = value;
+            }
+        });
+        
+        // Update monitor section
+        const monitorUpdates = {
+            'monitor-reflector-count': count,
+            'monitor-reflector-voltage': `${systemState.reflector.voltage.toFixed(2)}V`,
+            'monitor-avg-speed': `${averageSpeed.toFixed(1)}/dk`,
+            'monitor-instant-speed': `${systemState.reflector.instant_speed.toFixed(1)}/dk`,
+            'monitor-read-freq': `${systemState.reflector.read_frequency.toFixed(1)} Hz`,
+            'monitor-system-status': systemState.reflector.system_active ? 'Aktif' : 'Pasif',
+            'monitor-session-count': systemState.reflector.session_count,
+            'monitor-runtime': `${totalRuntime.toFixed(1)}dk`
+        };
+        
+        Object.entries(monitorUpdates).forEach(([id, value]) => {
+            const element = document.getElementById(id);
+            if (element && element.textContent !== value.toString()) {
+                element.textContent = value;
+            }
+        });
+    }
+    
+    static updateReflectorCorrelation(count, averageSpeed) {
+        // Update temperature vs reflector correlation
+        const tempSpeedRatio = systemState.temperature.current > 0 ? 
+            (averageSpeed / systemState.temperature.current).toFixed(1) : '0.0';
+        
+        const systemLoad = this.calculateSystemLoad(systemState.temperature.current, averageSpeed);
+        
+        const correlationUpdates = {
+            'temp-speed-ratio': tempSpeedRatio,
+            'system-load-indicator': systemLoad,
+            'modal-temp-speed-ratio': tempSpeedRatio,
+            'modal-system-load': systemLoad,
+            'modal-correlation-count': count,
+            'modal-correlation-speed': `${averageSpeed.toFixed(1)} ref/dk`
+        };
+        
+        Object.entries(correlationUpdates).forEach(([id, value]) => {
+            const element = document.getElementById(id);
+            if (element && element.textContent !== value.toString()) {
+                element.textContent = value;
+            }
+        });
+    }
+    
+    static updateReflectorLastUpdate() {
+        const lastUpdateEl = document.getElementById('reflector-last-update');
+        if (lastUpdateEl) {
+            lastUpdateEl.textContent = Utils.formatTime(new Date());
+        }
+    }
+    
+    static updateReflectorHistory(count, averageSpeed, instantSpeed) {
+        // Add to reflector history (limited frequency)
+        if (appState.reflectorHistory.length === 0 || 
+            (Date.now() - new Date(appState.reflectorHistory[appState.reflectorHistory.length - 1].timestamp).getTime()) >= 2000) {
+            
+            appState.reflectorHistory.push({
+                timestamp: new Date().toISOString(),
+                count: count,
+                average_speed: averageSpeed,
+                instant_speed: instantSpeed,
+                voltage: systemState.reflector.voltage
+            });
+            
+            // Keep history limited
+            if (appState.reflectorHistory.length > 200) {
+                appState.reflectorHistory = appState.reflectorHistory.slice(-200);
+            }
+        }
+    }
+    
+    static handleReflectorNotifications(count, averageSpeed, systemActive, state) {
+        // System inactive notification
+        if (!systemActive && systemState.reflector.connected) {
+            NotificationManager.show('Reflektor sistemi bağlantısı kesildi!', 'warning');
+            systemState.reflector.connected = false;
+        } else if (systemActive && !systemState.reflector.connected) {
+            NotificationManager.show('Reflektor sistemi yeniden bağlandı!', 'success');
+            systemState.reflector.connected = true;
+        }
+        
+        // High speed warning
+        if (averageSpeed > CONFIG.REFLECTOR_SPEED_WARNING && !appState.reflectorAnomalyWarningShown) {
+            NotificationManager.show(
+                `Yüksek reflektor hızı tespit edildi: ${averageSpeed.toFixed(1)} ref/dk`, 
+                'warning', 
+                6000
+            );
+            appState.reflectorAnomalyWarningShown = true;
+        } else if (averageSpeed <= CONFIG.REFLECTOR_SPEED_WARNING) {
+            appState.reflectorAnomalyWarningShown = false;
+        }
+        
+        // Count milestone notifications
+        const milestones = [100, 500, 1000, 5000, 10000];
+        milestones.forEach(milestone => {
+            if (count === milestone && appState.lastReflectorCount < milestone) {
+                NotificationManager.show(
+                    `🎉 Reflektor sayacı ${milestone} sayıma ulaştı! Ortalama hız: ${averageSpeed.toFixed(1)} ref/dk`, 
+                    'success', 
+                    5000
+                );
+            }
+        });
+    }
+    
+    static calculatePerformanceIndicator(averageSpeed, readFrequency, detections) {
+        if (readFrequency < 10 || detections === 0) return 'düşük';
+        if (readFrequency > 100 && averageSpeed > 10) return 'optimal';
+        if (readFrequency > 50 && averageSpeed > 5) return 'iyi';
+        return 'normal';
+    }
+    
+    static getPerformanceColor(indicator) {
+        const colors = {
+            'optimal': '#00ff88',
+            'iyi': '#00d4ff',
+            'normal': '#ffc107',
+            'düşük': '#ff4757'
+        };
+        return colors[indicator] || '#aaa';
+    }
+    
+    static calculateSystemLoad(temperature, reflectorSpeed) {
+        if (temperature > 45 && reflectorSpeed > 50) return 'Yüksek';
+        if (temperature > 35 || reflectorSpeed > 30) return 'Orta';
+        return 'Normal';
+    }
+    
+    // NEW: Reflector control functions
+    static async resetReflectorCounter() {
+        try {
+            const response = await RequestHandler.makeRequest(`${BACKEND_URL}/api/reflector/reset`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            });
+            
+            const data = await response.json();
+            
+            if (data.status === 'success') {
+                systemState.reflector.count = 0;
+                systemState.reflector.session_count = 0;
+                appState.lastReflectorCount = 0;
+                appState.reflectorHistory = [];
+                
+                NotificationManager.show('Reflektor sayacı başarıyla sıfırlandı', 'success');
+                CommandLogger.log('Reflektor sayacı sıfırlandı', true);
+                
+                // Update displays immediately
+                this.updateMainReflectorElements(0, systemState.reflector.voltage, 
+                    systemState.reflector.state, 0, 0);
+                
+            } else {
+                throw new Error(data.message || 'Sayaç sıfırlanamadı');
+            }
+        } catch (error) {
+            CommandLogger.log('Reflektor sayaç sıfırlama', false, error.message);
+            NotificationManager.show(`Reflektor sayacı sıfırlanamadı: ${error.message}`, 'error');
+        }
+    }
+    
+    static async calibrateReflectorSensor() {
+        try {
+            NotificationManager.show('Reflektor sensörü kalibre ediliyor...', 'info');
+            
+            const response = await RequestHandler.makeRequest(`${BACKEND_URL}/api/reflector/calibrate`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            });
+            
+            const data = await response.json();
+            
+            if (data.status === 'success') {
+                systemState.reflector.calibration_status = 'calibrated';
+                
+                NotificationManager.show('Reflektor sensörü başarıyla kalibre edildi', 'success');
+                CommandLogger.log('Reflektor sensörü kalibre edildi', true);
+                
+                // Log calibration data if available
+                if (data.calibration_data) {
+                    const calData = data.calibration_data;
+                    CommandLogger.log('Kalibrasyon verileri', true, 
+                        `Min: ${calData.min_voltage}V, Max: ${calData.max_voltage}V, Avg: ${calData.avg_voltage}V`);
+                }
+                
+            } else {
+                throw new Error(data.message || 'Kalibrasyon başarısız');
+            }
+        } catch (error) {
+            CommandLogger.log('Reflektor kalibrasyon', false, error.message);
+            NotificationManager.show(`Reflektor kalibrasyonu başarısız: ${error.message}`, 'error');
+        }
+    }
+    
+    // NEW: Ultra-fast reflector updates
+    static async updateReflectorOnly() {
+        try {
+            const response = await RequestHandler.makeRequest(`${BACKEND_URL}/api/reflector/realtime`, {
+                method: 'GET'
+            }, 2000, 1);
+            
+            const data = await response.json();
+            
+            if (data.count !== undefined) {
+                // Ultra-fast reflector data structure
+                const quickReflectorData = {
+                    count: data.count,
+                    voltage: data.voltage,
+                    state: data.state,
+                    average_speed: data.average_speed,
+                    instant_speed: data.instant_speed,
+                    read_frequency: data.read_frequency,
+                    system_active: data.system_active,
+                    // Keep existing values for performance
+                    detections: systemState.reflector.detections,
+                    session_count: data.count, // Session count is current count
+                    daily_count: data.count,   // Daily count is current count
+                    total_runtime: systemState.reflector.total_runtime,
+                    detection_rate: systemState.reflector.detection_rate,
+                    max_speed_recorded: Math.max(systemState.reflector.max_speed_recorded, data.instant_speed)
+                };
+                
+                this.updateReflectorDisplay(quickReflectorData);
+                
+                // Update connection status
+                ConnectionManager.updateConnectionStatus('backend', true);
+                appState.consecutiveErrors = 0;
+            }
+            
+        } catch (error) {
+            console.debug('Quick reflector update failed:', error.message);
+            appState.consecutiveErrors++;
+            
+            if (appState.consecutiveErrors >= 3) {
+                ConnectionManager.updateConnectionStatus('backend', false);
+                systemState.reflector.system_active = false;
+            }
+        }
+    }
+    
+    // NEW: Get reflector statistics
+    static async getReflectorStatistics() {
+        try {
+            const response = await RequestHandler.makeRequest(`${BACKEND_URL}/api/reflector/statistics`, {
+                method: 'GET'
+            });
+            
+            const data = await response.json();
+            
+            if (data.session && data.performance) {
+                // Update comprehensive statistics
+                systemState.reflector.total_runtime = data.session.duration_hours * 60;
+                systemState.reflector.detection_rate = data.session.average_rate;
+                systemState.reflector.max_speed_recorded = data.performance.max_speed_recorded;
+                
+                // Update statistics displays
+                this.updateReflectorStatistics(
+                    data.session.count,
+                    data.performance.recent_average_speed || systemState.reflector.average_speed,
+                    systemState.reflector.total_runtime
+                );
+                
+                // Update efficiency indicator
+                const efficiencyEl = document.getElementById('stats-efficiency');
+                if (efficiencyEl && data.performance.detection_efficiency !== undefined) {
+                    efficiencyEl.textContent = `${data.performance.detection_efficiency.toFixed(0)}%`;
+                }
+            }
+            
+        } catch (error) {
+            console.debug('Reflector statistics update failed:', error.message);
+        }
+    }
+}
+
+// DUAL Temperature Manager - ENHANCED WITH REFLECTOR CORRELATION
 class DualTemperatureManager {
     static updateDualTemperatureDisplay(tempData) {
         if (!tempData) return;
@@ -189,7 +710,7 @@ class DualTemperatureManager {
             dual_sensor_mode: true
         };
         
-        // Handle notifications
+        // Handle notifications with reflector correlation
         this.handleDualTemperatureNotifications(tempAlarm, emergencyActive, currentTemp, tempDifference, sensor1Connected, sensor2Connected);
     }
     
@@ -410,7 +931,7 @@ class DualTemperatureManager {
             }
         }
         
-        // Enhanced dual temperature emergency warning
+        // Enhanced dual temperature emergency warning with reflector data
         const emergencyWarning = document.getElementById('temperature-emergency-warning');
         if (emergencyWarning) {
             const shouldShow = tempAlarm || emergencyActive;
@@ -425,10 +946,12 @@ class DualTemperatureManager {
                     const temp1ValueEl = document.getElementById('warning-temp1-value');
                     const temp2ValueEl = document.getElementById('warning-temp2-value');
                     const tempMaxValueEl = document.getElementById('warning-temp-max-value');
+                    const reflectorCountEl = document.getElementById('warning-reflector-count');
                     
                     if (temp1ValueEl) temp1ValueEl.textContent = `${systemState.temperature.sensor1_temp.toFixed(1)}°C`;
                     if (temp2ValueEl) temp2ValueEl.textContent = `${systemState.temperature.sensor2_temp.toFixed(1)}°C`;
                     if (tempMaxValueEl) tempMaxValueEl.textContent = `${currentTemp.toFixed(1)}°C`;
+                    if (reflectorCountEl) reflectorCountEl.textContent = systemState.reflector.count;
                 }
             }
         }
@@ -442,27 +965,27 @@ class DualTemperatureManager {
     }
     
     static handleDualTemperatureNotifications(tempAlarm, emergencyActive, currentTemp, tempDifference, sensor1Connected, sensor2Connected) {
-        // Temperature alarm notifications
+        // Temperature alarm notifications with reflector data
         if ((tempAlarm || emergencyActive) && !appState.lastTempAlarmNotified) {
             NotificationManager.show(
-                `ÇIFT SENSÖR SICAKLIK ALARMI! Max: ${currentTemp.toFixed(1)}°C - Sistem durduruldu!`, 
+                `ÇIFT SENSÖR SICAKLIK ALARMI! Max: ${currentTemp.toFixed(1)}°C - Sistem durduruldu! Reflektor sayımı: ${systemState.reflector.count}`, 
                 'error', 
                 8000
             );
             appState.lastTempAlarmNotified = true;
         } else if (!(tempAlarm || emergencyActive) && appState.lastTempAlarmNotified) {
             NotificationManager.show(
-                `Sıcaklık güvenli seviyeye döndü: S1:${systemState.temperature.sensor1_temp.toFixed(1)}°C S2:${systemState.temperature.sensor2_temp.toFixed(1)}°C`, 
+                `Sıcaklık güvenli seviyeye döndü: S1:${systemState.temperature.sensor1_temp.toFixed(1)}°C S2:${systemState.temperature.sensor2_temp.toFixed(1)}°C, Reflektor: ${systemState.reflector.count}`, 
                 'success'
             );
             appState.lastTempAlarmNotified = false;
         }
         
-        // Warning level notifications
+        // Warning level notifications with reflector correlation
         if (currentTemp >= CONFIG.TEMP_WARNING_THRESHOLD && currentTemp < CONFIG.TEMP_ALARM_THRESHOLD) {
             if (!appState.tempWarningShown) {
                 NotificationManager.show(
-                    `Sıcaklık uyarı seviyesinde: Max ${currentTemp.toFixed(1)}°C (S1:${systemState.temperature.sensor1_temp.toFixed(1)}°C S2:${systemState.temperature.sensor2_temp.toFixed(1)}°C)`, 
+                    `Sıcaklık uyarı seviyesinde: Max ${currentTemp.toFixed(1)}°C (S1:${systemState.temperature.sensor1_temp.toFixed(1)}°C S2:${systemState.temperature.sensor2_temp.toFixed(1)}°C) - Reflektor: ${systemState.reflector.count}`, 
                     'warning'
                 );
                 appState.tempWarningShown = true;
@@ -513,10 +1036,10 @@ class DualTemperatureManager {
                 NotificationManager.show('Buzzer kapatıldı', 'success');
                 CommandLogger.log('Buzzer kapatıldı', true);
                 
-                // Log dual temperatures when buzzer turned off
+                // Log dual temperatures + reflector when buzzer turned off
                 if (data.dual_temps) {
-                    CommandLogger.log('Buzzer kapatıldığında sıcaklıklar', true, 
-                        `S1:${data.dual_temps.sensor1}°C S2:${data.dual_temps.sensor2}°C Max:${data.dual_temps.max}°C`);
+                    CommandLogger.log('Buzzer kapatıldığında veriler', true, 
+                        `S1:${data.dual_temps.sensor1}°C S2:${data.dual_temps.sensor2}°C Max:${data.dual_temps.max}°C Reflektor:${data.reflector_count || systemState.reflector.count}`);
                 }
             } else {
                 throw new Error(data.message || 'Buzzer kapatılamadı');
@@ -527,7 +1050,7 @@ class DualTemperatureManager {
         }
     }
     
-    // NEW: Ultra-fast dual temperature updates
+    // Ultra-fast dual temperature updates (same as before)
     static async updateDualTemperatureOnly() {
         try {
             const response = await RequestHandler.makeRequest(`${BACKEND_URL}/api/temperature/realtime`, {
@@ -537,7 +1060,7 @@ class DualTemperatureManager {
             const data = await response.json();
             
             if (data.dual_sensor_mode && data.sensor1_temp !== undefined && data.sensor2_temp !== undefined) {
-                // Ultra-fast dual temperature data structure
+                // Ultra-fast dual temperature data structure with reflector
                 const quickDualTempData = {
                     sensor1_temp: data.sensor1_temp,
                     sensor2_temp: data.sensor2_temp,
@@ -558,13 +1081,35 @@ class DualTemperatureManager {
                 
                 this.updateDualTemperatureDisplay(quickDualTempData);
                 
+                // Also update reflector data if included
+                if (data.reflector_count !== undefined) {
+                    const quickReflectorData = {
+                        count: data.reflector_count,
+                        voltage: data.reflector_voltage || systemState.reflector.voltage,
+                        average_speed: data.reflector_speed || systemState.reflector.average_speed,
+                        system_active: data.reflector_system_active !== undefined ? data.reflector_system_active : systemState.reflector.system_active,
+                        // Keep other existing values
+                        state: systemState.reflector.state,
+                        instant_speed: systemState.reflector.instant_speed,
+                        read_frequency: systemState.reflector.read_frequency,
+                        detections: systemState.reflector.detections,
+                        session_count: systemState.reflector.session_count,
+                        daily_count: systemState.reflector.daily_count,
+                        total_runtime: systemState.reflector.total_runtime,
+                        detection_rate: systemState.reflector.detection_rate,
+                        max_speed_recorded: systemState.reflector.max_speed_recorded
+                    };
+                    
+                    ReflectorManager.updateReflectorDisplay(quickReflectorData);
+                }
+                
                 // Update connection status
                 ConnectionManager.updateConnectionStatus('backend', true);
                 appState.consecutiveErrors = 0;
             }
             
         } catch (error) {
-            console.debug('Quick dual temperature update failed:', error.message);
+            console.debug('Quick dual temperature + reflector update failed:', error.message);
             appState.consecutiveErrors++;
             
             if (appState.consecutiveErrors >= 3) {
@@ -638,7 +1183,7 @@ class RequestHandler {
     }
 }
 
-// Status Manager - DUAL TEMPERATURE ENHANCED
+// Status Manager - DUAL TEMPERATURE + REFLECTOR ENHANCED
 class StatusManager {
     static async pollStatus() {
         try {
@@ -657,6 +1202,11 @@ class StatusManager {
                 // Dual temperature data handling
                 if (data.temperature) {
                     DualTemperatureManager.updateDualTemperatureDisplay(data.temperature);
+                }
+                
+                // NEW: Reflector data handling
+                if (data.reflector) {
+                    ReflectorManager.updateReflectorDisplay(data.reflector);
                 }
                 
                 // Motor states - SAME
@@ -699,6 +1249,13 @@ class StatusManager {
             if (appState.consecutiveErrors >= 2) {
                 ConnectionManager.updateConnectionStatus('backend', false);
                 ConnectionManager.updateConnectionStatus('arduino', false);
+                
+                // Also mark reflector as inactive
+                if (systemState.reflector) {
+                    systemState.reflector.system_active = false;
+                    systemState.reflector.connected = false;
+                    ReflectorManager.updateReflectorConnectionStatus(false);
+                }
             }
             console.debug('Status poll error:', error.message);
         }
@@ -714,6 +1271,12 @@ class StatusManager {
         }
         if (appState.realtimeTemperatureInterval) {
             clearInterval(appState.realtimeTemperatureInterval);
+        }
+        if (appState.reflectorUpdateInterval) {
+            clearInterval(appState.reflectorUpdateInterval);
+        }
+        if (appState.reflectorStatsInterval) {
+            clearInterval(appState.reflectorStatsInterval);
         }
         
         // Start general status polling
@@ -731,9 +1294,20 @@ class StatusManager {
             DualTemperatureManager.updateDualTemperatureOnly();
         }, CONFIG.REALTIME_TEMP_INTERVAL);
         
+        // NEW: Start ultra-fast reflector polling
+        appState.reflectorUpdateInterval = setInterval(() => {
+            ReflectorManager.updateReflectorOnly();
+        }, CONFIG.REFLECTOR_UPDATE_INTERVAL);
+        
+        // NEW: Start reflector statistics polling
+        appState.reflectorStatsInterval = setInterval(() => {
+            ReflectorManager.getReflectorStatistics();
+        }, CONFIG.REFLECTOR_STATS_INTERVAL);
+        
         // Initial calls
         setTimeout(() => this.pollStatus(), 500);
         setTimeout(() => DualTemperatureManager.updateDualTemperatureOnly(), 100);
+        setTimeout(() => ReflectorManager.updateReflectorOnly(), 200); // NEW
     }
 
     static stopStatusPolling() {
@@ -749,19 +1323,34 @@ class StatusManager {
             clearInterval(appState.realtimeTemperatureInterval);
             appState.realtimeTemperatureInterval = null;
         }
+        if (appState.reflectorUpdateInterval) {
+            clearInterval(appState.reflectorUpdateInterval);
+            appState.reflectorUpdateInterval = null;
+        }
+        if (appState.reflectorStatsInterval) {
+            clearInterval(appState.reflectorStatsInterval);
+            appState.reflectorStatsInterval = null;
+        }
     }
 }
 
-// Command Logger - SAME
+// Command Logger - ENHANCED WITH REFLECTOR DATA
 class CommandLogger {
     static log(command, success = true, details = '') {
         const timestamp = Utils.formatTime(new Date());
         const status = success ? '✅' : '❌';
+        
+        // Enhanced logging with reflector data for important commands
+        let enhancedDetails = details;
+        if (success && (command.includes('Motor') || command.includes('Grup') || command.includes('ARM') || command.includes('EMERGENCY'))) {
+            enhancedDetails = `${details} [Reflektor: ${systemState.reflector.count}]`;
+        }
+        
         const logEntry = {
             timestamp,
             status,
             command,
-            details,
+            details: enhancedDetails,
             id: Date.now()
         };
         
@@ -829,7 +1418,7 @@ class NotificationManager {
     }
 }
 
-// Connection Manager - ENHANCED for dual temperature
+// Connection Manager - ENHANCED for dual temperature + reflector
 class ConnectionManager {
     static updateConnectionStatus(type, connected) {
         systemState.connectionStatus[type] = connected;
@@ -868,20 +1457,26 @@ class ConnectionManager {
 
     static async testConnection() {
         try {
-            NotificationManager.show('Dual sensör bağlantı test ediliyor...', 'info');
+            NotificationManager.show('Dual sensör + reflektor bağlantı test ediliyor...', 'info');
             
             const response = await RequestHandler.makeRequest(`${BACKEND_URL}/api/ping`);
             const data = await response.json();
             
             if (data.status === 'ok') {
-                CommandLogger.log('Dual sensör bağlantı testi başarılı', true);
+                CommandLogger.log('Dual sensör + reflektor bağlantı testi başarılı', true);
                 
                 let tempInfo = 'N/A';
+                let reflectorInfo = 'N/A';
+                
                 if (data.dual_temperatures) {
                     tempInfo = `S1:${data.dual_temperatures.sensor1_temp}°C S2:${data.dual_temperatures.sensor2_temp}°C Max:${data.dual_temperatures.max_temp}°C`;
                 }
                 
-                NotificationManager.show(`Dual sensör bağlantı testi başarılı! ${tempInfo}`, 'success');
+                if (data.reflector_system) {
+                    reflectorInfo = `Sayım:${data.reflector_system.count} Hız:${data.reflector_system.average_speed.toFixed(1)}rpm`;
+                }
+                
+                NotificationManager.show(`Dual sensör + reflektor bağlantı testi başarılı! Sıcaklık: ${tempInfo}, Reflektor: ${reflectorInfo}`, 'success');
                 this.updateConnectionStatus('backend', true);
                 this.updateConnectionStatus('arduino', data.arduino_connected);
             } else {
@@ -889,7 +1484,7 @@ class ConnectionManager {
             }
             
         } catch (error) {
-            CommandLogger.log('Dual sensör bağlantı testi', false, error.message);
+            CommandLogger.log('Dual sensör + reflektor bağlantı testi', false, error.message);
             NotificationManager.show(`Bağlantı testi başarısız: ${error.message}`, 'error');
             this.updateConnectionStatus('backend', false);
             this.updateConnectionStatus('arduino', false);
@@ -898,7 +1493,7 @@ class ConnectionManager {
 
     static async reconnectArduino() {
         try {
-            NotificationManager.show('Arduino dual sensör sistemi yeniden bağlanıyor...', 'info');
+            NotificationManager.show('Arduino dual sensör + reflektor sistemi yeniden bağlanıyor...', 'info');
             
             const response = await RequestHandler.makeRequest(`${BACKEND_URL}/api/reconnect`, {
                 method: 'POST'
@@ -907,21 +1502,21 @@ class ConnectionManager {
             const data = await response.json();
             
             if (data.status === 'success') {
-                CommandLogger.log('Arduino dual sensör sistemi yeniden bağlandı', true);
-                NotificationManager.show('Arduino dual sensör sistemi yeniden bağlandı!', 'success');
+                CommandLogger.log('Arduino dual sensör + reflektor sistemi yeniden bağlandı', true);
+                NotificationManager.show('Arduino dual sensör + reflektor sistemi yeniden bağlandı!', 'success');
                 setTimeout(() => StatusManager.pollStatus(), 1000);
             } else {
                 throw new Error(data.message || 'Reconnection failed');
             }
             
         } catch (error) {
-            CommandLogger.log('Arduino dual sensör yeniden bağlanma', false, error.message);
+            CommandLogger.log('Arduino dual sensör + reflektor yeniden bağlanma', false, error.message);
             NotificationManager.show(`Arduino yeniden bağlanamadı: ${error.message}`, 'error');
         }
     }
 }
 
-// Motor Control - ENHANCED with dual temperature checks
+// Motor Control - ENHANCED with dual temperature + reflector checks
 class MotorController {
     static async startMotor(motorNum) {
         if (systemState.temperature.alarm || systemState.temperature.emergency_active) {
@@ -955,11 +1550,12 @@ class MotorController {
                     UIManager.updateMotorStatus(motorNum, true, speed);
                     UIManager.updateMotorCount();
                     CommandLogger.log(`Motor ${motorNum} başlatıldı`, true, 
-                        `${speed}% - S1:${systemState.temperature.sensor1_temp.toFixed(1)}°C S2:${systemState.temperature.sensor2_temp.toFixed(1)}°C`);
+                        `${speed}% - S1:${systemState.temperature.sensor1_temp.toFixed(1)}°C S2:${systemState.temperature.sensor2_temp.toFixed(1)}°C - Reflektor:${systemState.reflector.count}`);
                     NotificationManager.show(`Motor ${motorNum} başlatıldı!`, 'success');
                     
-                    // Quick dual temperature check after motor start
+                    // Quick dual temperature + reflector check after motor start
                     setTimeout(() => DualTemperatureManager.updateDualTemperatureOnly(), 200);
+                    setTimeout(() => ReflectorManager.updateReflectorOnly(), 200);
                 }
 
             } catch (error) {
@@ -982,7 +1578,7 @@ class MotorController {
                     systemState.individualMotorSpeeds[motorNum] = 0;
                     UIManager.updateMotorStatus(motorNum, false, 0);
                     UIManager.updateMotorCount();
-                    CommandLogger.log(`Motor ${motorNum} durduruldu`, true);
+                    CommandLogger.log(`Motor ${motorNum} durduruldu`, true, `Reflektor:${systemState.reflector.count}`);
                     NotificationManager.show(`Motor ${motorNum} durduruldu!`, 'success');
                 }
 
@@ -1026,7 +1622,7 @@ class MotorController {
                 if (response.ok) {
                     systemState.individualMotorSpeeds[motorNum] = speed;
                     UIManager.updateMotorSpeedDisplay(motorNum, speed);
-                    CommandLogger.log(`Motor ${motorNum} hızı`, true, `${speed}%`);
+                    CommandLogger.log(`Motor ${motorNum} hızı`, true, `${speed}% - Reflektor:${systemState.reflector.count}`);
                 }
 
             } catch (error) {
@@ -1038,7 +1634,7 @@ class MotorController {
     }
 }
 
-// Group Controller - ENHANCED with dual temperature logging
+// Group Controller - ENHANCED with dual temperature + reflector logging
 class GroupController {
     static async startGroup(groupType) {
         if (systemState.temperature.alarm || systemState.temperature.emergency_active) {
@@ -1082,11 +1678,12 @@ class GroupController {
                     
                     const groupName = groupType === 'levitation' ? 'Levitasyon' : 'İtki';
                     CommandLogger.log(`${groupName} grubu başlatıldı`, true, 
-                        `${speed}% - M${motorRange.join(',')} - S1:${systemState.temperature.sensor1_temp.toFixed(1)}°C S2:${systemState.temperature.sensor2_temp.toFixed(1)}°C`);
+                        `${speed}% - M${motorRange.join(',')} - S1:${systemState.temperature.sensor1_temp.toFixed(1)}°C S2:${systemState.temperature.sensor2_temp.toFixed(1)}°C - Reflektor:${systemState.reflector.count}`);
                     NotificationManager.show(`${groupName} grubu başlatıldı! (M${motorRange.join(',')})`, 'success');
                     
-                    // Quick dual temperature check after group start
+                    // Quick dual temperature + reflector check after group start
                     setTimeout(() => DualTemperatureManager.updateDualTemperatureOnly(), 200);
+                    setTimeout(() => ReflectorManager.updateReflectorOnly(), 200);
                 }
 
             } catch (error) {
@@ -1097,7 +1694,7 @@ class GroupController {
         });
     }
 
-    // Keep other GroupController methods same but with dual temp enhancements
+    // Keep other GroupController methods same but with dual temp + reflector enhancements
     static async stopGroup(groupType) {
         RequestHandler.throttleRequest(async () => {
             try {
@@ -1119,7 +1716,7 @@ class GroupController {
                     UIManager.updateMotorCount();
                     
                     const groupName = groupType === 'levitation' ? 'Levitasyon' : 'İtki';
-                    CommandLogger.log(`${groupName} grubu durduruldu`, true, `M${motorRange.join(',')}`);
+                    CommandLogger.log(`${groupName} grubu durduruldu`, true, `M${motorRange.join(',')} - Reflektor:${systemState.reflector.count}`);
                     NotificationManager.show(`${groupName} grubu durduruldu! (M${motorRange.join(',')})`, 'success');
                 }
 
@@ -1173,7 +1770,7 @@ class GroupController {
                         }
                     });
                     
-                    CommandLogger.log(`${groupType} hızı`, true, `${speed}%`);
+                    CommandLogger.log(`${groupType} hızı`, true, `${speed}% - Reflektor:${systemState.reflector.count}`);
                 }
 
             } catch (error) {
@@ -1184,7 +1781,7 @@ class GroupController {
     }
 }
 
-// System Controller - ENHANCED with dual temperature checks
+// System Controller - ENHANCED with dual temperature + reflector checks
 class SystemController {
     static async toggleArm() {
         if (!systemState.armed && (systemState.temperature.alarm || systemState.temperature.emergency_active)) {
@@ -1207,7 +1804,7 @@ class SystemController {
                     if (relayResponse.ok) {
                         systemState.relayBrakeActive = true;
                         UIManager.updateRelayBrakeStatus();
-                        CommandLogger.log('Röle otomatik aktif yapıldı', true);
+                        CommandLogger.log('Röle otomatik aktif yapıldı', true, `Reflektor:${systemState.reflector.count}`);
                         await new Promise(resolve => setTimeout(resolve, 500));
                     } else {
                         throw new Error('Röle aktif yapılamadı');
@@ -1237,11 +1834,12 @@ class SystemController {
                     
                     const statusText = action === 'arm' ? 'hazırlandı' : 'devre dışı bırakıldı';
                     CommandLogger.log(`Sistem ${statusText}`, true, 
-                        `S1:${systemState.temperature.sensor1_temp.toFixed(1)}°C S2:${systemState.temperature.sensor2_temp.toFixed(1)}°C`);
+                        `S1:${systemState.temperature.sensor1_temp.toFixed(1)}°C S2:${systemState.temperature.sensor2_temp.toFixed(1)}°C - Reflektor:${systemState.reflector.count}`);
                     NotificationManager.show(`Sistem ${statusText}!`, 'success');
                     
-                    // Quick dual temperature check after system change
+                    // Quick dual temperature + reflector check after system change
                     setTimeout(() => DualTemperatureManager.updateDualTemperatureOnly(), 200);
+                    setTimeout(() => ReflectorManager.updateReflectorOnly(), 200);
                 }
 
             } catch (error) {
@@ -1285,7 +1883,7 @@ class SystemController {
                     
                     const status = systemState.relayBrakeActive ? 'aktif' : 'pasif';
                     CommandLogger.log(`Röle ${status}`, true, 
-                        `S1:${systemState.temperature.sensor1_temp.toFixed(1)}°C S2:${systemState.temperature.sensor2_temp.toFixed(1)}°C`);
+                        `S1:${systemState.temperature.sensor1_temp.toFixed(1)}°C S2:${systemState.temperature.sensor2_temp.toFixed(1)}°C - Reflektor:${systemState.reflector.count}`);
                     NotificationManager.show(`Röle sistem ${status}!`, systemState.relayBrakeActive ? 'success' : 'warning');
                 }
 
@@ -1309,7 +1907,7 @@ class SystemController {
                 if (response.ok) {
                     systemState.brakeActive = (action === 'on');
                     
-                    CommandLogger.log(`Software brake ${action === 'on' ? 'aktif' : 'pasif'}`, true);
+                    CommandLogger.log(`Software brake ${action === 'on' ? 'aktif' : 'pasif'}`, true, `Reflektor:${systemState.reflector.count}`);
                     NotificationManager.show(`Software brake ${action === 'on' ? 'aktif' : 'pasif'}!`, 'success');
                 }
 
@@ -1346,8 +1944,8 @@ class SystemController {
             });
 
             CommandLogger.log('ACİL DURDURMA AKTİF', true, 
-                `Tüm sistemler durduruldu - S1:${systemState.temperature.sensor1_temp.toFixed(1)}°C S2:${systemState.temperature.sensor2_temp.toFixed(1)}°C`);
-            NotificationManager.show('ACİL DURDURMA! Tüm sistemler durduruldu!', 'error', 6000);
+                `Tüm sistemler durduruldu - S1:${systemState.temperature.sensor1_temp.toFixed(1)}°C S2:${systemState.temperature.sensor2_temp.toFixed(1)}°C - Final Reflektor:${systemState.reflector.count}`);
+            NotificationManager.show(`ACİL DURDURMA! Tüm sistemler durduruldu! Final reflektor sayımı: ${systemState.reflector.count}`, 'error', 6000);
 
         } catch (error) {
             CommandLogger.log('Acil durdurma', false, error.message);
@@ -1355,536 +1953,4 @@ class SystemController {
             console.error('Emergency stop error:', error);
         }
     }
-}
-
-// UI Manager - ENHANCED for dual temperature
-class UIManager {
-    static updateMotorStatus(motorNum, running, speed) {
-        const statusElement = document.getElementById(`motor${motorNum}-status`);
-        const speedDisplay = document.getElementById(`motor${motorNum}-speed-display`);
-        
-        if (statusElement) {
-            const newText = running ? 'ON' : 'OFF';
-            if (statusElement.textContent !== newText) {
-                statusElement.textContent = newText;
-                statusElement.className = running ? 'motor-status running' : 'motor-status off';
-            }
-        }
-        
-        if (speedDisplay) {
-            const newSpeedText = `Hız: ${speed}%`;
-            if (speedDisplay.textContent !== newSpeedText) {
-                speedDisplay.textContent = newSpeedText;
-            }
-        }
-    }
-
-    static updateMotorSpeedDisplay(motorNum, speed) {
-        const speedDisplay = document.getElementById(`motor${motorNum}-speed-display`);
-        if (speedDisplay) {
-            const newSpeedText = `Hız: ${speed}%`;
-            if (speedDisplay.textContent !== newSpeedText) {
-                speedDisplay.textContent = newSpeedText;
-            }
-        }
-    }
-
-    static updateGroupSpeedDisplay(groupType, speed) {
-        const speedElement = document.getElementById(`${groupType}-speed`);
-        const sliderElement = document.getElementById(`${groupType}-slider`);
-        
-        if (speedElement) {
-            const newText = `${speed}%`;
-            if (speedElement.textContent !== newText) {
-                speedElement.textContent = newText;
-            }
-        }
-        
-        if (sliderElement && sliderElement.value != speed) {
-            sliderElement.value = speed;
-        }
-    }
-
-    static updateMotorCount() {
-        const activeCount = Object.values(systemState.motorStates).filter(state => state).length;
-        const countElement = document.getElementById('motor-count');
-        const activeMotorsElement = document.getElementById('active-motors');
-        
-        if (countElement) {
-            const newText = `${activeCount}/6`;
-            if (countElement.textContent !== newText) {
-                countElement.textContent = newText;
-                countElement.style.color = activeCount > 0 ? '#00ff88' : '#aaa';
-            }
-        }
-        
-        if (activeMotorsElement) {
-            const newText = `${activeCount}/6`;
-            if (activeMotorsElement.textContent !== newText) {
-                activeMotorsElement.textContent = newText;
-            }
-        }
-
-        // Calculate average speeds
-        const levSpeeds = [1,2,3,4].map(i => systemState.individualMotorSpeeds[i]).filter(s => s > 0);
-        const thrSpeeds = [5,6].map(i => systemState.individualMotorSpeeds[i]).filter(s => s > 0);
-        
-        const levAvg = levSpeeds.length > 0 ? Math.round(levSpeeds.reduce((a,b) => a+b, 0) / levSpeeds.length) : 0;
-        const thrAvg = thrSpeeds.length > 0 ? Math.round(thrSpeeds.reduce((a,b) => a+b, 0) / thrSpeeds.length) : 0;
-        
-        // Batch update speed displays
-        const speedUpdates = {
-            'lev-avg-speed': `${levAvg}%`,
-            'thr-avg-speed': `${thrAvg}%`,
-            'total-speed': `${activeCount > 0 ? Math.round((levAvg + thrAvg) / 2) : 0}%`
-        };
-        
-        Object.entries(speedUpdates).forEach(([id, value]) => {
-            const element = document.getElementById(id);
-            if (element && element.textContent !== value) {
-                element.textContent = value;
-            }
-        });
-
-        this.updateSimulatedValues(activeCount);
-    }
-
-    static updateSimulatedValues(activeCount) {
-        const baseRpm = activeCount * 1500;
-        const tempEffect = Math.max(0, (systemState.temperature.current - 25) * 10);
-        const totalRpm = baseRpm + tempEffect + Math.random() * 500;
-        const rpmElement = document.getElementById('total-rpm');
-        if (rpmElement) {
-            const newRpm = Math.round(totalRpm);
-            if (rpmElement.textContent != newRpm) {
-                rpmElement.textContent = newRpm;
-            }
-        }
-
-        const basePower = activeCount * 45;
-        const tempPowerEffect = Math.max(0, (systemState.temperature.current - 25) * 2);
-        const powerUsage = basePower + tempPowerEffect + Math.random() * 20;
-        const powerElement = document.getElementById('power-usage');
-        if (powerElement) {
-            const newPower = `${Math.round(powerUsage)}W`;
-            if (powerElement.textContent !== newPower) {
-                powerElement.textContent = newPower;
-            }
-        }
-    }
-
-    static updateArmButton() {
-        const armButton = document.getElementById('arm-button');
-        const systemStatus = document.getElementById('system-status');
-        
-        if (armButton) {
-            if (systemState.armed) {
-                if (!armButton.textContent.includes('DEVRE DIŞI')) {
-                    armButton.textContent = 'SİSTEMİ DEVRE DIŞI BIRAK';
-                    armButton.className = 'arm-button armed';
-                }
-            } else {
-                if (!armButton.textContent.includes('HAZIRLA')) {
-                    armButton.textContent = 'SİSTEMİ HAZIRLA';
-                    armButton.className = 'arm-button';
-                }
-            }
-        }
-        
-        if (systemStatus) {
-            const newStatus = systemState.armed ? 'Hazır' : 'Devre Dışı';
-            if (systemStatus.textContent !== newStatus) {
-                systemStatus.textContent = newStatus;
-                systemStatus.className = systemState.armed ? 'status-value status-armed' : 'status-value status-error';
-            }
-        }
-    }
-
-    static updateRelayBrakeStatus() {
-        const relayStatus = document.getElementById('relay-status');
-        const relayBrakeStatus = document.getElementById('relay-brake-status');
-        
-        const statusText = systemState.relayBrakeActive ? 'Aktif' : 'Pasif';
-        const statusColor = systemState.relayBrakeActive ? '#00ff88' : '#ff0066';
-        
-        if (relayStatus && relayStatus.textContent !== statusText) {
-            relayStatus.textContent = statusText;
-            relayStatus.style.color = statusColor;
-        }
-        
-        if (relayBrakeStatus && relayBrakeStatus.textContent !== statusText) {
-            relayBrakeStatus.textContent = statusText;
-            relayBrakeStatus.style.color = statusColor;
-        }
-    }
-
-    static updateStatistics(stats) {
-        const elements = {
-            'total-commands': stats.commands || 0,
-            'total-errors': stats.errors || 0,
-            'uptime': Utils.formatUptime(stats.uptime_seconds || 0),
-            'arduino-port': stats.reconnect_attempts !== undefined ? `USB${stats.reconnect_attempts}` : '--'
-        };
-
-        Object.entries(elements).forEach(([id, value]) => {
-            const element = document.getElementById(id);
-            if (element && element.textContent !== value) {
-                element.textContent = value;
-            }
-        });
-    }
-
-    static showLoading(show = true) {
-        const overlay = document.getElementById('loading-overlay');
-        if (overlay) {
-            overlay.classList.toggle('hidden', !show);
-        }
-    }
-
-    static setLoadingText(text) {
-        const loadingText = document.querySelector('.loading-text');
-        if (loadingText && loadingText.textContent !== text) {
-            loadingText.textContent = text;
-        }
-    }
-}
-
-// NEW: Dual Temperature Modal Functions
-function showSensorDetails() {
-    const modal = document.getElementById('sensor-detail-modal');
-    if (modal) {
-        // Update modal content with current dual sensor data
-        const modalUpdates = {
-            'modal-sensor1-temp': `${systemState.temperature.sensor1_temp.toFixed(1)}°C`,
-            'modal-sensor2-temp': `${systemState.temperature.sensor2_temp.toFixed(1)}°C`,
-            'modal-sensor1-max': `${systemState.temperature.max_sensor1.toFixed(1)}°C`,
-            'modal-sensor2-max': `${systemState.temperature.max_sensor2.toFixed(1)}°C`,
-            'modal-sensor1-connection': systemState.temperature.sensor1_connected ? 'Bağlı' : 'Bağlantısız',
-            'modal-sensor2-connection': systemState.temperature.sensor2_connected ? 'Bağlı' : 'Bağlantısız',
-            'modal-safety-temp': `${systemState.temperature.current.toFixed(1)}°C`,
-            'modal-temp-diff': `${systemState.temperature.temperature_difference.toFixed(1)}°C`,
-            'modal-update-freq': `${systemState.temperature.update_frequency.toFixed(1)} Hz`,
-            'modal-redundancy': systemState.temperature.sensor1_connected && systemState.temperature.sensor2_connected ? 
-                              'Çift Aktif' : (systemState.temperature.sensor1_connected || systemState.temperature.sensor2_connected ? 
-                              'Tek Aktif' : 'Sensör Yok')
-        };
-        
-        Object.entries(modalUpdates).forEach(([id, value]) => {
-            const element = document.getElementById(id);
-            if (element) element.textContent = value;
-        });
-        
-        modal.style.display = 'block';
-    }
-}
-
-function hideSensorDetails() {
-    const modal = document.getElementById('sensor-detail-modal');
-    if (modal) {
-        modal.style.display = 'none';
-    }
-}
-
-// Global Functions - DUAL TEMPERATURE ENHANCED
-window.toggleArm = () => SystemController.toggleArm();
-window.startMotor = (motorNum) => MotorController.startMotor(motorNum);
-window.stopMotor = (motorNum) => MotorController.stopMotor(motorNum);
-window.setMotorSpeed = (motorNum, speed) => MotorController.setMotorSpeed(motorNum, speed);
-window.startGroup = (groupType) => GroupController.startGroup(groupType);
-window.stopGroup = (groupType) => GroupController.stopGroup(groupType);
-window.setGroupSpeed = (groupType, speed) => GroupController.setGroupSpeed(groupType, speed);
-window.adjustGroupSpeed = (groupType, change) => GroupController.adjustGroupSpeed(groupType, change);
-window.controlRelayBrake = (action) => SystemController.controlRelayBrake(action);
-window.controlBrake = (action) => SystemController.controlBrake(action);
-window.emergencyStop = () => SystemController.emergencyStop();
-window.testConnection = () => ConnectionManager.testConnection();
-window.reconnectArduino = () => ConnectionManager.reconnectArduino();
-window.closeNotification = () => NotificationManager.hide();
-window.turnOffBuzzer = () => DualTemperatureManager.turnOffBuzzer();
-window.showSensorDetails = showSensorDetails;
-window.hideSensorDetails = hideSensorDetails;
-
-// Application Lifecycle - DUAL TEMPERATURE ENHANCED
-class Application {
-    static async initialize() {
-        console.log('SpectraLoop Frontend DUAL TEMPERATURE v3.5 - Ultra-fast Dual Sensor Updates initializing...');
-        console.log('DUAL SENSOR FEATURES: 2x DS18B20, 400ms ultra-fast polling, redundant safety');
-        
-        try {
-            UIManager.showLoading(true);
-            UIManager.setLoadingText('Dual sensör sistem başlatılıyor...');
-            
-            UIManager.updateArmButton();
-            UIManager.updateRelayBrakeStatus();
-            UIManager.updateMotorCount();
-            
-            this.setupEventListeners();
-            
-            UIManager.setLoadingText('Dual sensör backend bağlantısı test ediliyor...');
-            
-            try {
-                await ConnectionManager.testConnection();
-            } catch (error) {
-                console.warn('Initial dual sensor connection test failed:', error.message);
-            }
-            
-            UIManager.setLoadingText('Ultra-fast dual sensör polling başlatılıyor...');
-            
-            StatusManager.startStatusPolling();
-            
-            // Start enhanced performance monitoring
-            this.startDualSensorPerformanceMonitoring();
-            
-            CommandLogger.log('DUAL SENSOR Frontend başlatıldı', true, 'Ultra-fast v3.5 + Dual DS18B20 Temperature Safety');
-            NotificationManager.show('SpectraLoop DUAL SENSOR sistemi hazır! ⚡400ms çift sensör güncellemeleri aktif⚡', 'success');
-            
-            UIManager.showLoading(false);
-            appState.isInitialized = true;
-            
-            console.log('DUAL SENSOR Frontend initialization complete with ultra-fast dual temperature monitoring');
-            
-        } catch (error) {
-            console.error('Dual sensor initialization error:', error);
-            UIManager.setLoadingText('Başlatma hatası! Yeniden denenecek...');
-            CommandLogger.log('Dual sensör başlatma hatası', false, error.message);
-            
-            setTimeout(() => {
-                this.initialize();
-            }, 2000);
-        }
-    }
-
-    static startDualSensorPerformanceMonitoring() {
-        // Enhanced performance statistics logging for dual sensors
-        setInterval(() => {
-            if (appState.performanceStats.averageUpdateFrequency > 0) {
-                console.debug(`Dual Sensor Performance: Frontend ${appState.performanceStats.averageUpdateFrequency.toFixed(2)} Hz, Backend ${systemState.temperature.update_frequency} Hz, S1 updates: ${appState.performanceStats.sensor1UpdatesCount}, S2 updates: ${appState.performanceStats.sensor2UpdatesCount}`);
-            }
-        }, CONFIG.PERFORMANCE_LOG_INTERVAL);
-    }
-
-    static setupEventListeners() {
-        document.addEventListener('visibilitychange', () => {
-            if (document.visibilityState === 'visible' && appState.isInitialized) {
-                setTimeout(() => {
-                    StatusManager.pollStatus();
-                    DualTemperatureManager.updateDualTemperatureOnly();
-                }, 200);
-            }
-        });
-
-        // Keyboard shortcuts - ENHANCED
-        document.addEventListener('keydown', (event) => {
-            if (event.ctrlKey) {
-                switch(event.key) {
-                    case ' ':
-                        event.preventDefault();
-                        SystemController.emergencyStop();
-                        break;
-                    case 'a':
-                        event.preventDefault();
-                        SystemController.toggleArm();
-                        break;
-                    case 't':
-                        event.preventDefault();
-                        ConnectionManager.testConnection();
-                        break;
-                    case 'r':
-                        event.preventDefault();
-                        SystemController.controlRelayBrake(systemState.relayBrakeActive ? 'off' : 'on');
-                        break;
-                    case 'l':
-                        event.preventDefault();
-                        CommandLogger.clear();
-                        break;
-                    case 'b':
-                        event.preventDefault();
-                        DualTemperatureManager.turnOffBuzzer();
-                        break;
-                    case 'd': // NEW: Show dual sensor details
-                        event.preventDefault();
-                        showSensorDetails();
-                        break;
-                }
-            }
-        });
-
-        // Modal close on ESC key
-        document.addEventListener('keydown', (event) => {
-            if (event.key === 'Escape') {
-                hideSensorDetails();
-            }
-        });
-
-        // Modal close on background click
-        document.addEventListener('click', (event) => {
-            const modal = document.getElementById('sensor-detail-modal');
-            if (event.target === modal) {
-                hideSensorDetails();
-            }
-        });
-
-        // Other event listeners - SAME
-        window.addEventListener('beforeunload', (event) => {
-            if (systemState.armed || Object.values(systemState.motorStates).some(state => state)) {
-                const message = 'Motorlar çalışıyor! Sayfayı kapatmak istediğinizden emin misiniz?';
-                event.preventDefault();
-                event.returnValue = message;
-                return message;
-            }
-        });
-
-        window.addEventListener('online', () => {
-            NotificationManager.show('İnternet bağlantısı yeniden kuruldu - Dual sensör sistemi aktif', 'success');
-            setTimeout(() => {
-                StatusManager.pollStatus();
-                DualTemperatureManager.updateDualTemperatureOnly();
-            }, 500);
-        });
-
-        window.addEventListener('offline', () => {
-            NotificationManager.show('İnternet bağlantısı kesildi - Dual sensör sistemi offline', 'warning', 2000);
-            ConnectionManager.updateConnectionStatus('backend', false);
-        });
-
-        window.addEventListener('error', (event) => {
-            console.error('Global error:', event.error);
-            CommandLogger.log('JavaScript Hatası', false, event.error.message);
-        });
-
-        window.addEventListener('unhandledrejection', (event) => {
-            console.error('Unhandled promise rejection:', event.reason);
-            CommandLogger.log('Promise Hatası', false, event.reason.message || 'Unknown error');
-        });
-
-        this.setupResponsiveHandlers();
-    }
-
-    static setupResponsiveHandlers() {
-        const mediaQuery = window.matchMedia('(max-width: 900px)');
-        
-        const handleScreenChange = (e) => {
-            if (e.matches) {
-                console.log('Switched to mobile layout - Dual sensor optimized');
-            } else {
-                console.log('Switched to desktop layout - Dual sensor optimized');
-            }
-        };
-
-        mediaQuery.addListener(handleScreenChange);
-        handleScreenChange(mediaQuery);
-    }
-
-    static shutdown() {
-        console.log('Shutting down DUAL TEMPERATURE SpectraLoop Frontend...');
-        
-        try {
-            StatusManager.stopStatusPolling();
-            
-            if (systemState.armed || Object.values(systemState.motorStates).some(state => state)) {
-                SystemController.emergencyStop();
-            }
-            
-            Object.keys(window).forEach(key => {
-                if (key.includes('Timeout')) {
-                    clearTimeout(window[key]);
-                }
-            });
-            
-            CommandLogger.log('DUAL SENSOR Frontend kapatıldı', true, 'Ultra-fast dual sensor güvenli kapatma');
-            console.log('DUAL SENSOR Frontend shutdown complete');
-            
-        } catch (error) {
-            console.error('Dual sensor shutdown error:', error);
-        }
-    }
-}
-
-// Initialize DUAL TEMPERATURE application
-document.addEventListener('DOMContentLoaded', () => {
-    Application.initialize();
-});
-
-window.addEventListener('beforeunload', () => {
-    Application.shutdown();
-});
-
-// Debug mode - DUAL TEMPERATURE ENHANCED
-if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
-    window.spectraDebugDualTemp = {
-        systemState,
-        appState,
-        performanceStats: appState.performanceStats,
-        dualTempState: systemState.temperature,
-        CONFIG,
-        CommandLogger,
-        NotificationManager,
-        ConnectionManager,
-        DualTemperatureManager,
-        MotorController,
-        GroupController,
-        SystemController,
-        StatusManager,
-        UIManager,
-        Application
-    };
-    
-    console.log('DUAL TEMPERATURE Debug mode enabled. Use window.spectraDebugDualTemp to access internals.');
-    console.log('Dual sensor performance monitoring available in appState.performanceStats');
-    console.log('Individual sensor stats: sensor1UpdatesCount, sensor2UpdatesCount, dualSensorUpdatesCount');
-}
-
-// Console info - DUAL TEMPERATURE ENHANCED
-console.log(`
-SpectraLoop Frontend DUAL TEMPERATURE v3.5 - Ultra-fast Dual Sensor Updates
-
-🌡️ DUAL SENSOR FEATURES:
-   ⚡ Primary DS18B20 sensor (Pin 8)
-   ⚡ Secondary DS18B20 sensor (Pin 13)
-   ⚡ 400ms ultra-fast realtime updates
-   ⚡ 800ms comprehensive dual updates
-   ⚡ Individual sensor health monitoring
-   ⚡ Redundant safety logic (worst-case)
-   ⚡ Temperature difference warnings
-   ⚡ Automatic sensor failover
-   ⚡ Enhanced emergency notifications
-
-🔧 OPTIMIZATION FEATURES:
-   ⚡ 1500ms general status polling
-   ⚡ Optimized DOM updates
-   ⚡ Dual sensor performance tracking
-   ⚡ Enhanced connection monitoring
-   ⚡ Smart request throttling (25ms)
-
-📊 DUAL SENSOR MONITORING:
-   • Individual sensor temperatures
-   • Connection status per sensor
-   • Temperature difference tracking
-   • Dual sensor update frequency
-   • Sensor failure count tracking
-   • Redundancy status monitoring
-
-⌨️ Keyboard shortcuts:
-   Ctrl+Space: Emergency Stop
-   Ctrl+A: Arm/Disarm System  
-   Ctrl+T: Test Dual Sensor Connection
-   Ctrl+R: Toggle Relay
-   Ctrl+L: Clear Command Log
-   Ctrl+B: Turn Off Buzzer
-   Ctrl+D: Show Dual Sensor Details (NEW)
-
-🌡️ DUAL TEMPERATURE SAFETY:
-   Primary Sensor: DS18B20 on Pin 8
-   Secondary Sensor: DS18B20 on Pin 13
-   Buzzer: Pin 9 (Dual alarm notification)
-   Relay Brake: Pin 11 (Safety cutoff)
-   Safety Logic: MAX(Sensor1, Sensor2) for worst-case protection
-   Thresholds: Safe <50°C, Warning 50-55°C, Alarm ≥55°C
-   Difference Warning: >5°C between sensors
-
-⚡ NOW WITH DUAL SENSOR REDUNDANCY! ⚡
-`);
-
-if (window.location.protocol === 'file:') {
-    console.warn('Running from file:// protocol. For best results, serve from a web server.');
 }
