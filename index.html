@@ -3,23 +3,23 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SpectraLoop Final v3.2 - Motor Control System</title>
+    <title>SpectraLoop v3.6 - DUAL Temperature + Reflector Counter System</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
     <!-- Header -->
     <div class="header">
-        <div class="logo">SPECTRALOOP FINAL v3.2 - PRODUCTION</div>
-        <div class="subtitle">Production Motor Control System - Levitation(1-4) Thrust(5-6) - DUAL Temperature Safety</div>
+        <div class="logo">SPECTRALOOP v3.6 - DUAL TEMP + REFLECTOR PRODUCTION</div>
+        <div class="subtitle">Production Motor Control System - Levitation(1-4) Thrust(5-6) - DUAL Temperature Safety + Ultra-Fast Reflector Counter</div>
     </div>
 
     <!-- Main Container -->
     <div class="main-container">
-        <!-- Left Panel - Individual Motor Controls -->
+        <!-- Left Panel - Individual Motor Controls + Temperature -->
         <div class="control-panel">
             <div class="panel-title">🎛️ İndividüel Motor Kontrolleri</div>
             
-            <!-- DUAL Temperature Section - COMPLETELY NEW -->
+            <!-- DUAL Temperature Section - ENHANCED -->
             <div class="temperature-section" id="temperature-section">
                 <div class="temperature-header">
                     <h4>🌡️ ÇIFT Sensör Sıcaklığı</h4>
@@ -49,10 +49,17 @@
                             <span id="sensor2-status-text">Bağlı</span>
                         </div>
                     </div>
+                    
+                    <!-- Safety Temperature (Max) -->
+                    <div class="sensor-reading safety" id="safety-reading">
+                        <div class="sensor-label">Güvenlik (Max)</div>
+                        <div class="temp-current safety" id="safety-temp">25.0°C</div>
+                        <div class="temp-status">
+                            <span id="temp-status-text">Güvenli</span>
+                        </div>
+                    </div>
                 </div>
                 
-                <!-- SYSTEM STATUS BAR -->
-               
                 <!-- DUAL SENSOR DETAILS -->
                 <div class="dual-sensor-details">
                     <div class="sensor-detail-group">
@@ -92,22 +99,6 @@
                     <div class="redundancy-value" id="sensor-redundancy-status">Çift Aktif</div>
                 </div>
                 
-                <!-- TEMPERATURE THRESHOLDS -->
-                <div class="temp-thresholds">
-                    <div class="threshold-item safe">
-                        <div class="threshold-label">Güvenli</div>
-                        <div class="threshold-value">&lt; 50°C</div>
-                    </div>
-                    <div class="threshold-item warning">
-                        <div class="threshold-label">Uyarı</div>
-                        <div class="threshold-value">50-55°C</div>
-                    </div>
-                    <div class="threshold-item danger">
-                        <div class="threshold-label">Tehlike</div>
-                        <div class="threshold-value">≥ 55°C</div>
-                    </div>
-                </div>
-                
                 <!-- TEMPERATURE CONTROLS -->
                 <div class="temp-controls">
                     <button class="buzzer-btn" id="buzzer-off-btn" onclick="turnOffBuzzer()" disabled>
@@ -118,6 +109,92 @@
                     </button>
                     <div class="temp-last-update">
                         Son güncelleme: <span id="temp-last-update">--:--:--</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- NEW: REFLECTOR COUNTER SECTION -->
+            <div class="reflector-section" id="reflector-section">
+                <div class="reflector-header">
+                    <h4>📏 Omron Reflektor Sayacı</h4>
+                    <div class="reflector-status-indicator" id="reflector-status" style="display: none;">
+                        <span class="status-text">AKTIF</span>
+                    </div>
+                </div>
+                
+                <!-- REFLECTOR MAIN DISPLAY -->
+                <div class="reflector-main">
+                    <div class="reflector-count-display">
+                        <div class="count-label">Toplam Sayım</div>
+                        <div class="count-current" id="reflector-count">0</div>
+                        <div class="count-status">
+                            <span id="reflector-system-status">Aktif</span>
+                            <span id="reflector-connection-mini" class="sensor-connection-mini connected">●</span>
+                        </div>
+                    </div>
+                    
+                    <div class="reflector-voltage-display">
+                        <div class="voltage-label">Sensör Voltajı</div>
+                        <div class="voltage-current" id="reflector-voltage">5.00V</div>
+                        <div class="voltage-status">
+                            <span id="reflector-detection-state">Temiz</span>
+                        </div>
+                    </div>
+                    
+                    <div class="reflector-speed-display">
+                        <div class="speed-label">Ortalama Hız</div>
+                        <div class="speed-current" id="reflector-avg-speed">0.0</div>
+                        <div class="speed-unit">ref/dk</div>
+                    </div>
+                </div>
+                
+                <!-- REFLECTOR DETAILED INFO -->
+                <div class="reflector-details">
+                    <div class="reflector-detail-group">
+                        <h5>Performans</h5>
+                        <div class="reflector-detail-item">
+                            <span class="reflector-detail-label">Anlık Hız:</span>
+                            <span class="reflector-detail-value" id="reflector-instant-speed">0.0 ref/dk</span>
+                        </div>
+                        <div class="reflector-detail-item">
+                            <span class="reflector-detail-label">Okuma Frek:</span>
+                            <span class="reflector-detail-value" id="reflector-read-freq">0.0 Hz</span>
+                        </div>
+                        <div class="reflector-detail-item">
+                            <span class="reflector-detail-label">Max Hız:</span>
+                            <span class="reflector-detail-value" id="reflector-max-speed">0.0 ref/dk</span>
+                        </div>
+                    </div>
+                    <div class="reflector-detail-group">
+                        <h5>İstatistikler</h5>
+                        <div class="reflector-detail-item">
+                            <span class="reflector-detail-label">Oturum:</span>
+                            <span class="reflector-detail-value" id="reflector-session-count">0</span>
+                        </div>
+                        <div class="reflector-detail-item">
+                            <span class="reflector-detail-label">Günlük:</span>
+                            <span class="reflector-detail-value" id="reflector-daily-count">0</span>
+                        </div>
+                        <div class="reflector-detail-item">
+                            <span class="reflector-detail-label">Çalışma:</span>
+                            <span class="reflector-detail-value" id="reflector-runtime">0.0 dk</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- REFLECTOR CONTROLS -->
+                <div class="reflector-controls">
+                    <button class="reflector-btn reset-btn" onclick="resetReflectorCounter()">
+                        🔄 Sayacı Sıfırla
+                    </button>
+                    <button class="reflector-btn calibrate-btn" onclick="calibrateReflectorSensor()">
+                        🎯 Kalibre Et
+                    </button>
+                    <button class="reflector-btn detail-btn" onclick="showReflectorDetails()">
+                        📈 Detaylı İstatistik
+                    </button>
+                    <div class="reflector-last-update">
+                        Son sayım: <span id="reflector-last-update">--:--:--</span>
                     </div>
                 </div>
             </div>
@@ -133,7 +210,7 @@
                     <div class="status-value status-armed" id="system-status">Hazır</div>
                 </div>
                 <div class="status-item">
-                    <div class="status-label">Aktif</div>
+                    <div class="status-label">Aktif Motor</div>
                     <div class="status-value" id="motor-count">0/6</div>
                 </div>
                 <div class="status-item">
@@ -231,9 +308,68 @@
             </div>
         </div>
 
-        <!-- Middle Panel - Group Controls -->
+        <!-- Middle Panel - Group Controls + Reflector Statistics -->
         <div class="control-panel">
-            <div class="panel-title">🚀 Grup Kontrolleri</div>
+            <div class="panel-title">🚀 Grup Kontrolleri + Reflektor İstatistik</div>
+            
+            <!-- NEW: REFLECTOR STATISTICS SECTION -->
+            <div class="reflector-stats-section">
+                <div class="stats-title">📊 Reflektor Performans İstatistikleri</div>
+                
+                <!-- Real-time Performance Chart Area -->
+                <div class="performance-chart-area">
+                    <div class="chart-header">
+                        <h5>Gerçek Zamanlı Hız Grafiği</h5>
+                        <div class="chart-controls">
+                            <button class="chart-btn" onclick="toggleSpeedChart()">📈 Grafik</button>
+                        </div>
+                    </div>
+                    <div class="mini-chart" id="reflector-speed-chart">
+                        <canvas id="speed-chart-canvas" width="300" height="100"></canvas>
+                    </div>
+                </div>
+                
+                <!-- Statistics Grid -->
+                <div class="reflector-stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-label">Toplam Sayım</div>
+                        <div class="stat-value reflector-value" id="stats-total-count">0</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Ortalama Hız</div>
+                        <div class="stat-value speed-value" id="stats-avg-speed">0.0 ref/dk</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Çalışma Süresi</div>
+                        <div class="stat-value time-value" id="stats-runtime">0h 0m</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Verimlilik</div>
+                        <div class="stat-value efficiency-value" id="stats-efficiency">100%</div>
+                    </div>
+                </div>
+                
+                <!-- Temperature vs Reflector Correlation -->
+                <div class="correlation-display">
+                    <div class="correlation-header">
+                        <h5>🌡️ Sıcaklık - Reflektor Korelasyonu</h5>
+                    </div>
+                    <div class="correlation-data">
+                        <div class="correlation-item">
+                            <span class="correlation-label">Sıc./Hız Oranı:</span>
+                            <span class="correlation-value" id="temp-speed-ratio">0.0</span>
+                        </div>
+                        <div class="correlation-item">
+                            <span class="correlation-label">Sistem Yükü:</span>
+                            <span class="correlation-value" id="system-load-indicator">Normal</span>
+                        </div>
+                        <div class="correlation-item">
+                            <span class="correlation-label">Performans:</span>
+                            <span class="correlation-value" id="performance-indicator">Optimal</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
             
             <!-- Levitation Group -->
             <div class="group-control">
@@ -294,11 +430,11 @@
             </div>
         </div>
 
-        <!-- Right Panel - System Info -->
+        <!-- Right Panel - Enhanced System Info + Reflector Monitoring -->
         <div class="control-panel">
-            <div class="panel-title">📊 Sistem Bilgileri</div>
+            <div class="panel-title">📊 Sistem Bilgileri + Reflektor Monitör</div>
             
-            <!-- DUAL Temperature Info Section - ENHANCED -->
+            <!-- ENHANCED Temperature Info Section -->
             <div class="info-section">
                 <h4 class="section-title">🌡️ ÇIFT Sensör Detayları</h4>
                 <div class="info-grid">
@@ -337,9 +473,48 @@
                 </div>
             </div>
             
+            <!-- NEW: ENHANCED Reflector Monitoring Section -->
+            <div class="info-section">
+                <h4 class="section-title">📏 Reflektor Sistem Monitörü</h4>
+                <div class="info-grid">
+                    <div class="info-item">
+                        <div class="info-label">Toplam Sayım</div>
+                        <div class="info-value reflector-value" id="monitor-reflector-count">0</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">Sensör Voltajı</div>
+                        <div class="info-value voltage-value" id="monitor-reflector-voltage">5.00V</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">Ortalama Hız</div>
+                        <div class="info-value speed-value" id="monitor-avg-speed">0.0/dk</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">Anlık Hız</div>
+                        <div class="info-value speed-value" id="monitor-instant-speed">0.0/dk</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">Okuma Frekansı</div>
+                        <div class="info-value freq-value" id="monitor-read-freq">0.0 Hz</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">Sistem Durumu</div>
+                        <div class="info-value system-value" id="monitor-system-status">Aktif</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">Oturum Sayımı</div>
+                        <div class="info-value session-value" id="monitor-session-count">0</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">Çalışma Süresi</div>
+                        <div class="info-value runtime-value" id="monitor-runtime">0.0dk</div>
+                    </div>
+                </div>
+            </div>
+            
             <!-- Performance Info -->
             <div class="info-section">
-                <h4 class="section-title">📈 Performans</h4>
+                <h4 class="section-title">📈 Sistem Performansı</h4>
                 <div class="info-grid">
                     <div class="info-item">
                         <div class="info-label">Toplam RPM</div>
@@ -350,8 +525,8 @@
                         <div class="info-value power-value" id="power-usage">0W</div>
                     </div>
                     <div class="info-item">
-                        <div class="info-label">Sistem Sıcaklık</div>
-                        <div class="info-value temp-value" id="system-temperature">25°C</div>
+                        <div class="info-label">Aktif Motorlar</div>
+                        <div class="info-value motor-value" id="active-motors">0/6</div>
                     </div>
                     <div class="info-item">
                         <div class="info-label">Röle Durumu</div>
@@ -360,30 +535,7 @@
                 </div>
             </div>
 
-            <!-- Motor Speed Summary -->
-            <div class="info-section">
-                <h4 class="section-title">⚙️ Motor Durumu</h4>
-                <div class="info-grid">
-                    <div class="info-item">
-                        <div class="info-label">Lev Grubu Ort.</div>
-                        <div class="info-value speed-value" id="lev-avg-speed">0%</div>
-                    </div>
-                    <div class="info-item">
-                        <div class="info-label">İtki Grubu Ort.</div>
-                        <div class="info-value speed-value" id="thr-avg-speed">0%</div>
-                    </div>
-                    <div class="info-item">
-                        <div class="info-label">Aktif Motorlar</div>
-                        <div class="info-value motor-value" id="active-motors">0/6</div>
-                    </div>
-                    <div class="info-item">
-                        <div class="info-label">Toplam Hız</div>
-                        <div class="info-value total-speed-value" id="total-speed">0%</div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Connection Status -->
+            <!-- Enhanced Connection Status with Reflector -->
             <div class="info-section">
                 <h4 class="section-title">🔗 Bağlantı Durumu</h4>
                 <div class="connection-status">
@@ -408,6 +560,11 @@
                         <span class="connection-text" id="sensor2-status-text">Bağlantısız</span>
                     </div>
                     <div class="connection-item">
+                        <span class="connection-label">Reflektor:</span>
+                        <div class="connection-dot" id="reflector-dot"></div>
+                        <span class="connection-text" id="reflector-connection-text">Bağlantısız</span>
+                    </div>
+                    <div class="connection-item">
                         <span class="connection-label">Son Güncelleme:</span>
                         <span class="update-time" id="last-update">--:--:--</span>
                     </div>
@@ -427,13 +584,13 @@
             <div class="info-section">
                 <h4 class="section-title">📝 Komut Geçmişi</h4>
                 <div id="command-log" class="command-log">
-                    <div class="log-entry">Çift sensör sistemi başlatılıyor...</div>
+                    <div class="log-entry">DUAL sensör + reflektor sistemi başlatılıyor...</div>
                 </div>
             </div>
 
-            <!-- System Stats -->
+            <!-- Enhanced System Stats -->
             <div class="info-section">
-                <h4 class="section-title">📊 İstatistikler</h4>
+                <h4 class="section-title">📊 Sistem İstatistikleri</h4>
                 <div class="stats-grid">
                     <div class="stat-item">
                         <span class="stat-label">Komutlar:</span>
@@ -462,7 +619,7 @@
         <div class="emergency-text">STOP</div>
     </div>
 
-    <!-- DUAL Temperature Emergency Warning -->
+    <!-- ENHANCED Temperature Emergency Warning with Reflector Data -->
     <div class="temperature-emergency-warning" id="temperature-emergency-warning" style="display: none;">
         <div class="warning-content">
             <div class="warning-icon">🌡️🚨</div>
@@ -483,15 +640,115 @@
                         <div class="warning-temp-value" id="warning-temp-max-value">--°C</div>
                     </div>
                 </div>
+                <div class="warning-reflector-info">
+                    <div class="warning-subtitle">Son Reflektor Durumu:</div>
+                    <div class="warning-reflector-item">
+                        <span class="warning-reflector-label">Final Sayım:</span>
+                        <span class="warning-reflector-value" id="warning-reflector-count">0</span>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
 
-    <!-- Sensor Detail Modal -->
+    <!-- NEW: Reflector Detail Modal -->
+    <div class="reflector-detail-modal" id="reflector-detail-modal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 class="modal-title">📏 Omron Reflektor Detay İstatistikleri</h3>
+                <span class="modal-close" onclick="hideReflectorDetails()">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div class="modal-section">
+                    <h4>Gerçek Zamanlı Veriler</h4>
+                    <div class="modal-detail-item">
+                        <span class="modal-detail-label">Toplam Sayım:</span>
+                        <span class="modal-detail-value" id="modal-reflector-count">0</span>
+                    </div>
+                    <div class="modal-detail-item">
+                        <span class="modal-detail-label">Sensör Voltajı:</span>
+                        <span class="modal-detail-value" id="modal-reflector-voltage">5.00V</span>
+                    </div>
+                    <div class="modal-detail-item">
+                        <span class="modal-detail-label">Algılama Durumu:</span>
+                        <span class="modal-detail-value" id="modal-detection-state">Temiz</span>
+                    </div>
+                    <div class="modal-detail-item">
+                        <span class="modal-detail-label">Ortalama Hız:</span>
+                        <span class="modal-detail-value" id="modal-avg-speed">0.0 ref/dk</span>
+                    </div>
+                    <div class="modal-detail-item">
+                        <span class="modal-detail-label">Anlık Hız:</span>
+                        <span class="modal-detail-value" id="modal-instant-speed">0.0 ref/dk</span>
+                    </div>
+                    <div class="modal-detail-item">
+                        <span class="modal-detail-label">Max Hız:</span>
+                        <span class="modal-detail-value" id="modal-max-speed">0.0 ref/dk</span>
+                    </div>
+                </div>
+                <div class="modal-section">
+                    <h4>Performans & İstatistikler</h4>
+                    <div class="modal-detail-item">
+                        <span class="modal-detail-label">Oturum Sayımı:</span>
+                        <span class="modal-detail-value" id="modal-session-count">0</span>
+                    </div>
+                    <div class="modal-detail-item">
+                        <span class="modal-detail-label">Günlük Sayım:</span>
+                        <span class="modal-detail-value" id="modal-daily-count">0</span>
+                    </div>
+                    <div class="modal-detail-item">
+                        <span class="modal-detail-label">Çalışma Süresi:</span>
+                        <span class="modal-detail-value" id="modal-runtime">0.0 dakika</span>
+                    </div>
+                    <div class="modal-detail-item">
+                        <span class="modal-detail-label">Algılama Oranı:</span>
+                        <span class="modal-detail-value" id="modal-detection-rate">0.0/dk</span>
+                    </div>
+                    <div class="modal-detail-item">
+                        <span class="modal-detail-label">Okuma Frekansı:</span>
+                        <span class="modal-detail-value" id="modal-read-freq">0.0 Hz</span>
+                    </div>
+                    <div class="modal-detail-item">
+                        <span class="modal-detail-label">Sistem Durumu:</span>
+                        <span class="modal-detail-value" id="modal-system-active">Aktif</span>
+                    </div>
+                </div>
+                <div class="modal-section">
+                    <h4>Kalibrasyon & Konfigürasyon</h4>
+                    <div class="modal-detail-item">
+                        <span class="modal-detail-label">Algılama Eşiği:</span>
+                        <span class="modal-detail-value" id="modal-detect-threshold">4.64V</span>
+                    </div>
+                    <div class="modal-detail-item">
+                        <span class="modal-detail-label">Bırakma Eşiği:</span>
+                        <span class="modal-detail-value" id="modal-release-threshold">4.89V</span>
+                    </div>
+                    <div class="modal-detail-item">
+                        <span class="modal-detail-label">Son Kalibrasyon:</span>
+                        <span class="modal-detail-value" id="modal-last-calibration">Henüz yapılmadı</span>
+                    </div>
+                    <div class="modal-detail-item">
+                        <span class="modal-detail-label">Min Voltaj:</span>
+                        <span class="modal-detail-value" id="modal-min-voltage">0.0V</span>
+                    </div>
+                    <div class="modal-detail-item">
+                        <span class="modal-detail-label">Max Voltaj:</span>
+                        <span class="modal-detail-value" id="modal-max-voltage">5.0V</span>
+                    </div>
+                    <div class="modal-detail-item">
+                        <span class="modal-detail-label">Ortalama Voltaj:</span>
+                        <span class="modal-detail-value" id="modal-avg-voltage">5.0V</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Enhanced Sensor Detail Modal with Reflector Correlation -->
     <div class="sensor-detail-modal" id="sensor-detail-modal" style="display: none;">
         <div class="modal-content">
             <div class="modal-header">
-                <h3 class="modal-title">🌡️ ÇIFT Sensör Detay Bilgileri</h3>
+                <h3 class="modal-title">🌡️ ÇIFT Sensör + Reflektor Korelasyon Detayları</h3>
                 <span class="modal-close" onclick="hideSensorDetails()">&times;</span>
             </div>
             <div class="modal-body">
@@ -537,11 +794,30 @@
                     </div>
                     <div class="modal-detail-item">
                         <span class="modal-detail-label">Update Frekansı:</span>
-                        <span class="modal-detail-value" id="modal-update-freq">0.0 Hz</span>
+                        <span class="modal-detail-value" id="modal-temp-update-freq">0.0 Hz</span>
                     </div>
                     <div class="modal-detail-item">
                         <span class="modal-detail-label">Redundancy Status:</span>
                         <span class="modal-detail-value" id="modal-redundancy">Çift Aktif</span>
+                    </div>
+                </div>
+                <div class="modal-section">
+                    <h4>Reflektor Korelasyonu</h4>
+                    <div class="modal-detail-item">
+                        <span class="modal-detail-label">Reflektor Sayımı:</span>
+                        <span class="modal-detail-value" id="modal-correlation-count">0</span>
+                    </div>
+                    <div class="modal-detail-item">
+                        <span class="modal-detail-label">Hız:</span>
+                        <span class="modal-detail-value" id="modal-correlation-speed">0.0 ref/dk</span>
+                    </div>
+                    <div class="modal-detail-item">
+                        <span class="modal-detail-label">Sıc./Hız Oranı:</span>
+                        <span class="modal-detail-value" id="modal-temp-speed-ratio">0.0</span>
+                    </div>
+                    <div class="modal-detail-item">
+                        <span class="modal-detail-label">Sistem Yükü:</span>
+                        <span class="modal-detail-value" id="modal-system-load">Normal</span>
                     </div>
                 </div>
             </div>
@@ -560,7 +836,7 @@
     <!-- Loading Overlay -->
     <div id="loading-overlay" class="loading-overlay">
         <div class="loading-spinner"></div>
-        <div class="loading-text">Çift sensör sistemi başlatılıyor...</div>
+        <div class="loading-text">DUAL sensör + reflektor sistemi başlatılıyor...</div>
     </div>
 
     <!-- Scripts -->

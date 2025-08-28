@@ -1,10 +1,11 @@
 /*
- * SpectraLoop Motor Control System - Arduino DUAL TEMPERATURE v3.5
- * DUAL DS18B20 Temperature Sensors + Ultra-fast monitoring
- * 6 BLDC Motor + Relay Brake + 2x DS18B20 + Buzzer
+ * SpectraLoop Motor Control System - Arduino DUAL TEMPERATURE + REFLECTOR COUNTER v3.6
+ * DUAL DS18B20 Temperature Sensors + Ultra-fast monitoring + Omron Reflector Counter
+ * 6 BLDC Motor + Relay Brake + 2x DS18B20 + Buzzer + Reflector Counting
  * Motor Pin Mapping: Thrust(3,7), Levitation(2,4,5,6)
  * Temperature Sensors: Pin 8 (Primary), Pin 13 (Secondary)
- * ULTRA-FAST: 100ms readings, dual sensor monitoring, safety redundancy
+ * Reflector Sensor: Pin A0 (Omron Photoelectric)
+ * ULTRA-FAST: 100ms temp readings + 5ms reflector readings + dual sensor monitoring
  */
 
 #include <Servo.h>
@@ -16,6 +17,8 @@
 #define ONE_WIRE_BUS_2 13   // Secondary temperature sensor
 #define BUZZER_PIN 9
 #define RELAY_BRAKE_PIN 11
+#define REFLECTOR_SENSOR_PIN A0  // NEW: Omron photoelectric sensor
+#define REFLECTOR_LED_PIN 12     // NEW: Reflector status LED
 
 // Dual temperature sensors
 OneWire oneWire1(ONE_WIRE_BUS_1);
@@ -44,7 +47,7 @@ struct SystemState {
   bool buzzerActive : 1;
   bool sensor1Connected : 1;
   bool sensor2Connected : 1;
-  byte reserved : 1;
+  bool reflectorSystemActive : 1;  // NEW: Reflector system status
 } sysState = {0};
 
 // DUAL Temperature monitoring - ENHANCED
@@ -64,14 +67,51 @@ unsigned long lastHeartbeat = 0;
 unsigned long tempReadCount = 0;
 unsigned long alarmCount = 0;
 
+// REFLECTOR COUNTER SYSTEM - NEW COMPLETE SECTION
+struct ReflectorSystem {
+  // Counter variables
+  volatile unsigned long count = 0;
+  bool currentState = false;           // false = no reflector, true = reflector detected
+  bool lastState = false;
+  unsigned long lastChangeTime = 0;
+  unsigned long lastStableTime = 0;
+  
+  // Measurement variables
+  int analogValue = 0;
+  float voltage = 0.0;
+  unsigned long lastReadTime = 0;
+  unsigned long lastReportTime = 0;
+  
+  // Statistics
+  unsigned long startTime = 0;
+  unsigned long lastReflectorTime = 0;
+  float averageSpeed = 0.0;        // reflectors per minute
+  float instantSpeed = 0.0;        // current speed
+  unsigned long speedUpdateTime = 0;
+  
+  // Configuration
+  const int DETECT_THRESHOLD = 950;     // 4.64V below = reflector detected (1023 = 5V)
+  const int RELEASE_THRESHOLD = 1000;   // 4.89V above = no reflector
+  const unsigned long DEBOUNCE_TIME = 50;      // 50ms debounce
+  const unsigned long STABLE_TIME = 10;        // 10ms stable reading
+  const unsigned long READ_INTERVAL = 5;       // 5ms reading interval
+  const unsigned long REPORT_INTERVAL = 500;   // 500ms report interval
+  
+  // Performance tracking
+  unsigned long readCount = 0;
+  unsigned long detectionCount = 0;
+  float readFrequency = 0.0;
+} reflector;
+
 // Temperature safety thresholds
 const float TEMP_ALARM = 55.0;
 const float TEMP_SAFE = 50.0;
 const float TEMP_WARNING = 45.0;
 
-// ULTRA-FAST Constants - DUAL SENSOR OPTIMIZED
-const unsigned long TEMP_INTERVAL = 100;        // 100ms - read both sensors
+// ULTRA-FAST Constants - DUAL SENSOR + REFLECTOR OPTIMIZED
+const unsigned long TEMP_INTERVAL = 100;        // 100ms - read both temp sensors
 const unsigned long TEMP_REPORT_INTERVAL = 200; // Report every 200ms
+const unsigned long REFLECTOR_INTERVAL = 5;     // 5ms - ultra fast reflector reading
 const unsigned long BUZZER_INTERVAL = 500;
 const unsigned long COMMAND_COOLDOWN = 10;
 const unsigned long HEARTBEAT_INTERVAL = 5000;  // 5s heartbeat
@@ -89,8 +129,11 @@ void setup() {
   // Initialize pins
   pinMode(BUZZER_PIN, OUTPUT);
   pinMode(RELAY_BRAKE_PIN, OUTPUT);
+  pinMode(REFLECTOR_SENSOR_PIN, INPUT);  // NEW
+  pinMode(REFLECTOR_LED_PIN, OUTPUT);    // NEW
   digitalWrite(BUZZER_PIN, LOW);
   digitalWrite(RELAY_BRAKE_PIN, LOW);
+  digitalWrite(REFLECTOR_LED_PIN, LOW);  // NEW
   
   // Initialize DUAL temperature sensors
   Serial.println(F("Initializing dual temperature sensors..."));
@@ -113,6 +156,31 @@ void setup() {
   Serial.print(F("Sensor 2 (Pin 13): "));
   Serial.println(sysState.sensor2Connected ? F("CONNECTED") : F("DISCONNECTED"));
   
+  // Initialize REFLECTOR system - NEW
+  Serial.println(F("Initializing Omron reflector counter..."));
+  reflector.startTime = millis();
+  reflector.lastReflectorTime = reflector.startTime;
+  reflector.lastReadTime = reflector.startTime;
+  reflector.lastReportTime = reflector.startTime;
+  reflector.speedUpdateTime = reflector.startTime;
+  sysState.reflectorSystemActive = true;
+  
+  // Test reflector sensor
+  reflector.analogValue = analogRead(REFLECTOR_SENSOR_PIN);
+  reflector.voltage = (reflector.analogValue * 5.0) / 1023.0;
+  Serial.print(F("Reflector sensor initial reading: "));
+  Serial.print(reflector.analogValue);
+  Serial.print(F(" ("));
+  Serial.print(reflector.voltage, 2);
+  Serial.println(F("V)"));
+  
+  Serial.print(F("Detection threshold: "));
+  Serial.print((reflector.DETECT_THRESHOLD * 5.0) / 1023.0, 2);
+  Serial.println(F("V"));
+  Serial.print(F("Release threshold: "));
+  Serial.print((reflector.RELEASE_THRESHOLD * 5.0) / 1023.0, 2);
+  Serial.println(F("V"));
+  
   // Initialize motors
   for (byte i = 0; i < NUM_MOTORS; i++) {
     motors[i].attach(MOTOR_PINS[i]);
@@ -128,13 +196,15 @@ void setup() {
   delay(200); // Wait for conversion
   readTemperaturesNonBlocking();
   
-  Serial.println(F("SpectraLoop v3.5 DUAL TEMPERATURE - Ultra-fast Monitoring"));
-  Serial.println(F("FEATURES: 2x DS18B20 sensors, redundant safety, 100ms monitoring"));
+  Serial.println(F("SpectraLoop v3.6 DUAL TEMPERATURE + REFLECTOR COUNTER"));
+  Serial.println(F("FEATURES: 2x DS18B20 sensors, Omron reflector counter, ultra-fast monitoring"));
   Serial.print(F("Initial Temps - Sensor1: "));
   Serial.print(currentTemp1);
   Serial.print(F("°C, Sensor2: "));
   Serial.print(currentTemp2);
   Serial.println(F("°C"));
+  Serial.print(F("Reflector Count: "));
+  Serial.println(reflector.count);
   Serial.println(F("READY"));
 }
 
@@ -148,10 +218,22 @@ void loop() {
     lastTempRead = now;
   }
   
+  // ULTRA-FAST Reflector monitoring - NEW
+  if (now - reflector.lastReadTime >= REFLECTOR_INTERVAL) {
+    readReflectorSensor();
+    reflector.lastReadTime = now;
+  }
+  
   // Temperature reporting - both sensors
   if (now - lastTempReport >= TEMP_REPORT_INTERVAL) {
     reportTemperaturesIfChanged();
     lastTempReport = now;
+  }
+  
+  // Reflector reporting - NEW
+  if (now - reflector.lastReportTime >= reflector.REPORT_INTERVAL) {
+    reportReflectorData();
+    reflector.lastReportTime = now;
   }
   
   // Buzzer control
@@ -170,7 +252,7 @@ void loop() {
     lastCommandTime = now;
   }
   
-  // Heartbeat with dual temperatures
+  // Heartbeat with dual temperatures + reflector data
   if (now - lastHeartbeat > HEARTBEAT_INTERVAL) {
     sendHeartbeat();
     lastHeartbeat = now;
@@ -181,6 +263,118 @@ void loop() {
     sendPerformanceReport(now);
     lastPerformanceReport = now;
   }
+}
+
+// NEW REFLECTOR SYSTEM FUNCTIONS
+void readReflectorSensor() {
+  // Ultra-fast sensor reading
+  reflector.analogValue = analogRead(REFLECTOR_SENSOR_PIN);
+  reflector.voltage = (reflector.analogValue * 5.0) / 1023.0;
+  reflector.readCount++;
+  
+  // State determination with hysteresis
+  bool newState = reflector.currentState;
+  
+  if (!reflector.currentState && reflector.analogValue < reflector.DETECT_THRESHOLD) {
+    // Reflector detected (voltage dropped)
+    newState = true;
+  } else if (reflector.currentState && reflector.analogValue > reflector.RELEASE_THRESHOLD) {
+    // Reflector lost (voltage increased)
+    newState = false;
+  }
+  
+  unsigned long currentTime = millis();
+  
+  // State change control with debouncing
+  if (newState != reflector.currentState) {
+    // Record first change time
+    if (currentTime - reflector.lastChangeTime > reflector.DEBOUNCE_TIME) {
+      reflector.lastChangeTime = currentTime;
+    }
+    
+    // Check if stable for required time
+    if (currentTime - reflector.lastChangeTime >= reflector.STABLE_TIME) {
+      // State change accepted
+      reflector.lastState = reflector.currentState;
+      reflector.currentState = newState;
+      
+      // Reflector detected -> increment counter
+      if (reflector.currentState && !reflector.lastState) {
+        reflector.count++;
+        reflector.detectionCount++;
+        reflector.lastReflectorTime = currentTime;
+        
+        // Calculate instant speed (time between reflectors)
+        static unsigned long lastReflectorDetection = 0;
+        if (lastReflectorDetection > 0) {
+          unsigned long timeDiff = currentTime - lastReflectorDetection;
+          if (timeDiff > 0) {
+            reflector.instantSpeed = 60000.0 / timeDiff; // reflectors per minute
+          }
+        }
+        lastReflectorDetection = currentTime;
+        
+        // Brief LED flash for detection feedback
+        digitalWrite(REFLECTOR_LED_PIN, HIGH);
+        
+        // Send immediate detection report
+        Serial.print(F("REFLECTOR_DETECTED:"));
+        Serial.print(reflector.count);
+        Serial.print(F(" [VOLTAGE:"));
+        Serial.print(reflector.voltage, 2);
+        Serial.print(F("V] [SPEED:"));
+        Serial.print(reflector.instantSpeed, 1);
+        Serial.println(F("rpm]"));
+      }
+    }
+  } else {
+    // No state change, reset change time
+    reflector.lastChangeTime = currentTime;
+  }
+  
+  // LED status (on when reflector present)
+  digitalWrite(REFLECTOR_LED_PIN, reflector.currentState);
+  
+  // Brief LED flash turn off after detection
+  if (reflector.currentState && !reflector.lastState && 
+      currentTime - reflector.lastReflectorTime > 50) {
+    digitalWrite(REFLECTOR_LED_PIN, LOW);
+  }
+}
+
+void reportReflectorData() {
+  unsigned long currentTime = millis();
+  
+  // Calculate average speed
+  float elapsedMinutes = (currentTime - reflector.startTime) / 60000.0;
+  if (elapsedMinutes > 0) {
+    reflector.averageSpeed = reflector.count / elapsedMinutes;
+  }
+  
+  // Calculate read frequency
+  static unsigned long lastReadCount = 0;
+  static unsigned long lastFreqUpdate = 0;
+  unsigned long elapsed = currentTime - lastFreqUpdate;
+  if (elapsed >= 1000) { // Update frequency every second
+    reflector.readFrequency = (reflector.readCount - lastReadCount) / (elapsed / 1000.0);
+    lastReadCount = reflector.readCount;
+    lastFreqUpdate = currentTime;
+  }
+  
+  // Send comprehensive reflector report
+  Serial.print(F("REFLECTOR_STATUS [COUNT:"));
+  Serial.print(reflector.count);
+  Serial.print(F("] [VOLTAGE:"));
+  Serial.print(reflector.voltage, 2);
+  Serial.print(F("V] [STATE:"));
+  Serial.print(reflector.currentState ? F("DETECTED") : F("CLEAR"));
+  Serial.print(F("] [AVG_SPEED:"));
+  Serial.print(reflector.averageSpeed, 1);
+  Serial.print(F("rpm] [INST_SPEED:"));
+  Serial.print(reflector.instantSpeed, 1);
+  Serial.print(F("rpm] [READ_FREQ:"));
+  Serial.print(reflector.readFrequency, 1);
+  Serial.println(F("Hz]"));
 }
 
 void requestTemperatureReadings() {
@@ -296,18 +490,22 @@ void checkDualTempSafety() {
     alarmCount++;
     emergencyStopTemp();
     
-    // Immediate alarm reports
+    // Immediate alarm reports with reflector data
     Serial.print(F("TEMP_ALARM:"));
     Serial.print(maxCurrentTemp, 2);
     Serial.print(F(" (S1:"));
     Serial.print(currentTemp1, 2);
     Serial.print(F(",S2:"));
     Serial.print(currentTemp2, 2);
-    Serial.println(F(")"));
+    Serial.print(F(") [REFLECTOR:"));
+    Serial.print(reflector.count);
+    Serial.println(F("]"));
     
     // Also send in ACK format for immediate parsing
     Serial.print(F("ALARM_ACTIVE [TEMP:"));
     Serial.print(maxCurrentTemp, 2);
+    Serial.print(F("] [REFLECTOR:"));
+    Serial.print(reflector.count);
     Serial.println(F("]"));
     
   } else if (maxCurrentTemp <= TEMP_SAFE && sysState.temperatureAlarm) {
@@ -316,18 +514,22 @@ void checkDualTempSafety() {
     sysState.buzzerActive = false;
     digitalWrite(BUZZER_PIN, LOW);
     
-    // Immediate safe reports
+    // Immediate safe reports with reflector data
     Serial.print(F("TEMP_SAFE:"));
     Serial.print(maxCurrentTemp, 2);
     Serial.print(F(" (S1:"));
     Serial.print(currentTemp1, 2);
     Serial.print(F(",S2:"));
     Serial.print(currentTemp2, 2);
-    Serial.println(F(")"));
+    Serial.print(F(") [REFLECTOR:"));
+    Serial.print(reflector.count);
+    Serial.println(F("]"));
     
     // Also send in ACK format
     Serial.print(F("TEMP_NORMAL [TEMP:"));
     Serial.print(maxCurrentTemp, 2);
+    Serial.print(F("] [REFLECTOR:"));
+    Serial.print(reflector.count);
     Serial.println(F("]"));
   }
 }
@@ -351,7 +553,9 @@ void emergencyStopTemp() {
   Serial.print(currentTemp1, 2);
   Serial.print(F(",S2:"));
   Serial.print(currentTemp2, 2);
-  Serial.println(F(")"));
+  Serial.print(F(") [REFLECTOR_FINAL:"));
+  Serial.print(reflector.count);
+  Serial.println(F("]"));
 }
 
 void processCommand() {
@@ -359,7 +563,7 @@ void processCommand() {
   cmd.trim();
   if (cmd.length() == 0) return;
 
-  // Send ACK with DUAL temperature info
+  // Send ACK with DUAL temperature + reflector info
   Serial.print(F("ACK:"));
   Serial.print(cmd);
   Serial.print(F(" [TEMP1:"));
@@ -368,10 +572,12 @@ void processCommand() {
   Serial.print(currentTemp2, 2);
   Serial.print(F("] [MAX:"));
   Serial.print(max(currentTemp1, currentTemp2), 2);
+  Serial.print(F("] [REFLECTOR:"));
+  Serial.print(reflector.count);
   Serial.println(F("]"));
 
   if (cmd == F("PING")) {
-    Serial.println(F("PONG:v3.5-DUAL-TEMP"));
+    Serial.println(F("PONG:v3.6-DUAL-TEMP-REFLECTOR"));
   } 
   else if (cmd == F("ARM")) {
     armSystem();
@@ -386,7 +592,7 @@ void processCommand() {
     sendTempStatus();
   }
   else if (cmd == F("TEMP_DUAL")) {
-    // NEW: Detailed dual temperature status
+    // Detailed dual temperature status
     Serial.print(F("TEMP_DUAL:S1:"));
     Serial.print(currentTemp1, 2);
     Serial.print(F(",S2:"));
@@ -400,8 +606,72 @@ void processCommand() {
     Serial.print(F(",S2_CONN:"));
     Serial.println(sysState.sensor2Connected);
   }
+  else if (cmd == F("REFLECTOR_STATUS")) {
+    // NEW: Detailed reflector status
+    Serial.print(F("REFLECTOR_FULL:COUNT:"));
+    Serial.print(reflector.count);
+    Serial.print(F(",VOLTAGE:"));
+    Serial.print(reflector.voltage, 3);
+    Serial.print(F(",STATE:"));
+    Serial.print(reflector.currentState);
+    Serial.print(F(",AVG_SPEED:"));
+    Serial.print(reflector.averageSpeed, 2);
+    Serial.print(F(",INST_SPEED:"));
+    Serial.print(reflector.instantSpeed, 2);
+    Serial.print(F(",DETECTIONS:"));
+    Serial.print(reflector.detectionCount);
+    Serial.print(F(",READS:"));
+    Serial.print(reflector.readCount);
+    Serial.print(F(",READ_FREQ:"));
+    Serial.print(reflector.readFrequency, 1);
+    Serial.print(F(",ACTIVE:"));
+    Serial.println(sysState.reflectorSystemActive);
+  }
+  else if (cmd == F("REFLECTOR_RESET")) {
+    // NEW: Reset reflector counter
+    reflector.count = 0;
+    reflector.detectionCount = 0;
+    reflector.startTime = millis();
+    reflector.lastReflectorTime = reflector.startTime;
+    reflector.averageSpeed = 0.0;
+    reflector.instantSpeed = 0.0;
+    Serial.println(F("REFLECTOR_RESET:SUCCESS"));
+  }
+  else if (cmd == F("REFLECTOR_CALIBRATE")) {
+    // NEW: Reflector sensor calibration
+    int readings[10];
+    for (int i = 0; i < 10; i++) {
+      readings[i] = analogRead(REFLECTOR_SENSOR_PIN);
+      delay(50);
+    }
+    int minReading = 1023, maxReading = 0;
+    int avgReading = 0;
+    for (int i = 0; i < 10; i++) {
+      if (readings[i] < minReading) minReading = readings[i];
+      if (readings[i] > maxReading) maxReading = readings[i];
+      avgReading += readings[i];
+    }
+    avgReading /= 10;
+    
+    Serial.print(F("REFLECTOR_CALIBRATION:MIN:"));
+    Serial.print(minReading);
+    Serial.print(F(",MAX:"));
+    Serial.print(maxReading);
+    Serial.print(F(",AVG:"));
+    Serial.print(avgReading);
+    Serial.print(F(",MIN_V:"));
+    Serial.print((minReading * 5.0) / 1023.0, 2);
+    Serial.print(F(",MAX_V:"));
+    Serial.print((maxReading * 5.0) / 1023.0, 2);
+    Serial.print(F(",AVG_V:"));
+    Serial.print((avgReading * 5.0) / 1023.0, 2);
+    Serial.print(F(",DETECT_TH:"));
+    Serial.print(reflector.DETECT_THRESHOLD);
+    Serial.print(F(",RELEASE_TH:"));
+    Serial.println(reflector.RELEASE_THRESHOLD);
+  }
   else if (cmd == F("TEMP_REALTIME")) {
-    // Ultra-fast dual temperature response
+    // Ultra-fast dual temperature + reflector response
     Serial.print(F("REALTIME_DUAL:"));
     Serial.print(currentTemp1, 2);
     Serial.print(F(","));
@@ -413,10 +683,16 @@ void processCommand() {
     Serial.print(F(","));
     Serial.print(sysState.buzzerActive);
     Serial.print(F(","));
-    Serial.println(tempReadCount);
+    Serial.print(tempReadCount);
+    Serial.print(F(","));
+    Serial.print(reflector.count);
+    Serial.print(F(","));
+    Serial.print(reflector.averageSpeed, 1);
+    Serial.print(F(","));
+    Serial.println(reflector.instantSpeed, 1);
   }
   else if (cmd == F("TEMP_DEBUG")) {
-    Serial.println(F("=== DUAL TEMPERATURE DEBUG ==="));
+    Serial.println(F("=== DUAL TEMPERATURE + REFLECTOR DEBUG ==="));
     Serial.print(F("Sensor 1 (Pin 8): "));
     Serial.print(currentTemp1, 3);
     Serial.print(F("°C ["));
@@ -444,12 +720,29 @@ void processCommand() {
     Serial.println(alarmCount);
     Serial.print(F("Read Count: "));
     Serial.println(tempReadCount);
-    Serial.print(F("Read Interval: "));
-    Serial.print(TEMP_INTERVAL);
-    Serial.println(F("ms"));
-    Serial.print(F("Safety Decision Based On: "));
-    Serial.print(max(currentTemp1, currentTemp2), 2);
-    Serial.println(F("°C (highest sensor)"));
+    
+    // NEW: Reflector debug info
+    Serial.println(F("--- REFLECTOR SYSTEM ---"));
+    Serial.print(F("Count: "));
+    Serial.println(reflector.count);
+    Serial.print(F("Voltage: "));
+    Serial.print(reflector.voltage, 3);
+    Serial.println(F("V"));
+    Serial.print(F("State: "));
+    Serial.println(reflector.currentState ? F("DETECTED") : F("CLEAR"));
+    Serial.print(F("Avg Speed: "));
+    Serial.print(reflector.averageSpeed, 2);
+    Serial.println(F(" ref/min"));
+    Serial.print(F("Inst Speed: "));
+    Serial.print(reflector.instantSpeed, 2);
+    Serial.println(F(" ref/min"));
+    Serial.print(F("Detections: "));
+    Serial.println(reflector.detectionCount);
+    Serial.print(F("Read Freq: "));
+    Serial.print(reflector.readFrequency, 1);
+    Serial.println(F(" Hz"));
+    Serial.print(F("System Active: "));
+    Serial.println(sysState.reflectorSystemActive);
     Serial.println(F("=== DEBUG END ==="));
   } 
   else if (cmd == F("BUZZER_OFF")) {
@@ -494,7 +787,9 @@ void armSystem() {
       sysState.temperatureAlarm || maxCurrentTemp > TEMP_ALARM - 5) {
     Serial.print(F("ERROR:Cannot_arm (MaxTemp:"));
     Serial.print(maxCurrentTemp, 1);
-    Serial.println(F("°C)"));
+    Serial.print(F("°C) [REFLECTOR:"));
+    Serial.print(reflector.count);
+    Serial.println(F("]"));
     return;
   }
   
@@ -505,7 +800,9 @@ void armSystem() {
   }
   
   sysState.armed = true;
-  Serial.println(F("ARMED"));
+  Serial.print(F("ARMED [REFLECTOR:"));
+  Serial.print(reflector.count);
+  Serial.println(F("]"));
 }
 
 void disarmSystem() {
@@ -516,7 +813,9 @@ void disarmSystem() {
     motorSpeeds[i] = 0;
   }
   levitationGroupSpeed = thrustGroupSpeed = 0;
-  Serial.println(F("DISARMED"));
+  Serial.print(F("DISARMED [REFLECTOR:"));
+  Serial.print(reflector.count);
+  Serial.println(F("]"));
 }
 
 void setRelayBrake(bool active) {
@@ -539,10 +838,13 @@ void setRelayBrake(bool active) {
   }
   
   Serial.print(F("RELAY_BRAKE:"));
-  Serial.println(active ? F("ON") : F("OFF"));
+  Serial.print(active ? F("ON") : F("OFF"));
+  Serial.print(F(" [REFLECTOR:"));
+  Serial.print(reflector.count);
+  Serial.println(F("]"));
 }
 
-// Motor control functions - SAME as before but with dual temp safety
+// Motor control functions - ENHANCED with dual temp + reflector safety
 void parseMotorCmd(String cmd) {
   if (!canStartMotors()) return;
   
@@ -567,13 +869,18 @@ void parseMotorCmd(String cmd) {
     Serial.print(F("MOTOR_STARTED:"));
     Serial.print(motorNum);
     Serial.print(':');
-    Serial.println(speed);
+    Serial.print(speed);
+    Serial.print(F(" [REFLECTOR:"));
+    Serial.print(reflector.count);
+    Serial.println(F("]"));
     
-    // Immediate dual temperature check after motor start
+    // Immediate dual temperature + reflector check after motor start
     Serial.print(F("POST_START [TEMP1:"));
     Serial.print(currentTemp1, 2);
     Serial.print(F("] [TEMP2:"));
     Serial.print(currentTemp2, 2);
+    Serial.print(F("] [REFLECTOR:"));
+    Serial.print(reflector.count);
     Serial.println(F("]"));
     
   } else if (action == F("STOP")) {
@@ -582,7 +889,10 @@ void parseMotorCmd(String cmd) {
     setMotorSpeed(idx, 0);
     
     Serial.print(F("MOTOR_STOPPED:"));
-    Serial.println(motorNum);
+    Serial.print(motorNum);
+    Serial.print(F(" [REFLECTOR:"));
+    Serial.print(reflector.count);
+    Serial.println(F("]"));
     
   } else if (action == F("SPEED") && colon3 > 0) {
     byte speed = cmd.substring(colon3 + 1).toInt();
@@ -594,11 +904,14 @@ void parseMotorCmd(String cmd) {
     Serial.print(F("MOTOR_SPEED:"));
     Serial.print(motorNum);
     Serial.print(':');
-    Serial.println(speed);
+    Serial.print(speed);
+    Serial.print(F(" [REFLECTOR:"));
+    Serial.print(reflector.count);
+    Serial.println(F("]"));
   }
 }
 
-// Group control functions - similar pattern with dual temp monitoring
+// Group control functions - similar pattern with dual temp + reflector monitoring
 void parseLevCmd(String cmd) {
   if (!canStartMotors()) return;
   
@@ -619,13 +932,18 @@ void parseLevCmd(String cmd) {
     }
     
     Serial.print(F("LEV_GROUP_STARTED:"));
-    Serial.println(speed);
+    Serial.print(speed);
+    Serial.print(F(" [REFLECTOR:"));
+    Serial.print(reflector.count);
+    Serial.println(F("]"));
     
-    // Dual temperature report after group start
+    // Dual temperature + reflector report after group start
     Serial.print(F("LEV_START [TEMP1:"));
     Serial.print(currentTemp1, 2);
     Serial.print(F("] [TEMP2:"));
     Serial.print(currentTemp2, 2);
+    Serial.print(F("] [REFLECTOR:"));
+    Serial.print(reflector.count);
     Serial.println(F("]"));
     
   } else if (action == F("STOP")) {
@@ -635,7 +953,9 @@ void parseLevCmd(String cmd) {
       setMotorSpeed(i, 0);
     }
     levitationGroupSpeed = 0;
-    Serial.println(F("LEV_GROUP_STOPPED"));
+    Serial.print(F("LEV_GROUP_STOPPED [REFLECTOR:"));
+    Serial.print(reflector.count);
+    Serial.println(F("]"));
     
   } else if (action == F("SPEED") && colon2 > 0) {
     byte speed = cmd.substring(colon2 + 1).toInt();
@@ -650,7 +970,10 @@ void parseLevCmd(String cmd) {
     }
     
     Serial.print(F("LEV_GROUP_SPEED:"));
-    Serial.println(speed);
+    Serial.print(speed);
+    Serial.print(F(" [REFLECTOR:"));
+    Serial.print(reflector.count);
+    Serial.println(F("]"));
   }
 }
 
@@ -674,13 +997,18 @@ void parseThrCmd(String cmd) {
     }
     
     Serial.print(F("THR_GROUP_STARTED:"));
-    Serial.println(speed);
+    Serial.print(speed);
+    Serial.print(F(" [REFLECTOR:"));
+    Serial.print(reflector.count);
+    Serial.println(F("]"));
     
-    // Dual temperature report after thrust start
+    // Dual temperature + reflector report after thrust start
     Serial.print(F("THR_START [TEMP1:"));
     Serial.print(currentTemp1, 2);
     Serial.print(F("] [TEMP2:"));
     Serial.print(currentTemp2, 2);
+    Serial.print(F("] [REFLECTOR:"));
+    Serial.print(reflector.count);
     Serial.println(F("]"));
     
   } else if (action == F("STOP")) {
@@ -690,7 +1018,9 @@ void parseThrCmd(String cmd) {
       setMotorSpeed(i, 0);
     }
     thrustGroupSpeed = 0;
-    Serial.println(F("THR_GROUP_STOPPED"));
+    Serial.print(F("THR_GROUP_STOPPED [REFLECTOR:"));
+    Serial.print(reflector.count);
+    Serial.println(F("]"));
     
   } else if (action == F("SPEED") && colon2 > 0) {
     byte speed = cmd.substring(colon2 + 1).toInt();
@@ -705,7 +1035,10 @@ void parseThrCmd(String cmd) {
     }
     
     Serial.print(F("THR_GROUP_SPEED:"));
-    Serial.println(speed);
+    Serial.print(speed);
+    Serial.print(F(" [REFLECTOR:"));
+    Serial.print(reflector.count);
+    Serial.println(F("]"));
   }
 }
 
@@ -716,7 +1049,9 @@ bool canStartMotors() {
       sysState.temperatureAlarm || maxCurrentTemp > TEMP_ALARM - 3) {
     Serial.print(F("ERROR:Cannot_start (MaxTemp:"));
     Serial.print(maxCurrentTemp, 1);
-    Serial.println(F("°C)"));
+    Serial.print(F("°C) [REFLECTOR:"));
+    Serial.print(reflector.count);
+    Serial.println(F("]"));
     return false;
   }
   
@@ -739,7 +1074,10 @@ void setBrake(bool active) {
     }
     levitationGroupSpeed = thrustGroupSpeed = 0;
   }
-  Serial.println(active ? F("BRAKE_ON") : F("BRAKE_OFF"));
+  Serial.print(active ? F("BRAKE_ON") : F("BRAKE_OFF"));
+  Serial.print(F(" [REFLECTOR:"));
+  Serial.print(reflector.count);
+  Serial.println(F("]"));
 }
 
 void emergencyStop() {
@@ -755,7 +1093,9 @@ void emergencyStop() {
   }
   
   levitationGroupSpeed = thrustGroupSpeed = 0;
-  Serial.println(F("EMERGENCY_STOP"));
+  Serial.print(F("EMERGENCY_STOP [REFLECTOR_FINAL:"));
+  Serial.print(reflector.count);
+  Serial.println(F("]"));
 }
 
 void setMotorSpeed(byte idx, byte speed) {
@@ -786,6 +1126,12 @@ void sendTempStatus() {
   Serial.print(F("ReadFrequency:"));
   Serial.print(1000.0 / TEMP_INTERVAL, 1);
   Serial.println(F("Hz"));
+  // NEW: Reflector status in temperature status
+  Serial.print(F("ReflectorCount:"));
+  Serial.println(reflector.count);
+  Serial.print(F("ReflectorSpeed:"));
+  Serial.print(reflector.averageSpeed, 1);
+  Serial.println(F("rpm"));
 }
 
 void sendStatus() {
@@ -814,6 +1160,20 @@ void sendStatus() {
   Serial.println(levitationGroupSpeed);
   Serial.print(F("ThrGroupSpeed:"));
   Serial.println(thrustGroupSpeed);
+  
+  // NEW: Reflector system status
+  Serial.print(F("ReflectorCount:"));
+  Serial.println(reflector.count);
+  Serial.print(F("ReflectorVoltage:"));
+  Serial.println(reflector.voltage, 2);
+  Serial.print(F("ReflectorState:"));
+  Serial.println(reflector.currentState);
+  Serial.print(F("ReflectorAvgSpeed:"));
+  Serial.println(reflector.averageSpeed, 1);
+  Serial.print(F("ReflectorInstSpeed:"));
+  Serial.println(reflector.instantSpeed, 1);
+  Serial.print(F("ReflectorActive:"));
+  Serial.println(sysState.reflectorSystemActive);
   
   Serial.print(F("Motors:"));
   for (byte i = 0; i < NUM_MOTORS; i++) {
@@ -856,13 +1216,17 @@ void sendHeartbeat() {
   Serial.print(',');
   Serial.println(activeCount);
   
-  // Enhanced heartbeat with dual temperature info
+  // Enhanced heartbeat with dual temperature + reflector info
   Serial.print(F("HB_DUAL [TEMP1:"));
   Serial.print(currentTemp1, 2);
   Serial.print(F("] [TEMP2:"));
   Serial.print(currentTemp2, 2);
   Serial.print(F("] [MAX:"));
   Serial.print(maxCurrentTemp, 2);
+  Serial.print(F("] [REFLECTOR:"));
+  Serial.print(reflector.count);
+  Serial.print(F("] [REF_SPEED:"));
+  Serial.print(reflector.averageSpeed, 1);
   Serial.println(F("]"));
 }
 
@@ -877,6 +1241,10 @@ void sendPerformanceReport(unsigned long now) {
   Serial.print(F("Hz,DualSensors:"));
   Serial.print(sysState.sensor1Connected ? 'Y' : 'N');
   Serial.print(sysState.sensor2Connected ? 'Y' : 'N');
+  Serial.print(F(",ReflectorReads:"));
+  Serial.print(reflector.readFrequency, 1);
+  Serial.print(F("Hz,ReflectorCount:"));
+  Serial.print(reflector.count);
   Serial.print(F(",FreeRAM:"));
   Serial.println(getFreeMemory());
   
