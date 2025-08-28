@@ -1,522 +1,534 @@
 /*
- * SpectraLoop Motor Control System - Arduino Final v3.2
- * Python Backend ile Full Uyumlu - MPU6050 Removed
- * 6 BLDC Motor + Relay Brake
+ * SpectraLoop Motor Control System - Arduino Final v3.3
+ * Optimized for Arduino Uno - Temperature + Buzzer Safety
+ * 6 BLDC Motor + Relay Brake + DS18B20 + Buzzer
  * Motor Pin Mapping: Thrust(3,7), Levitation(2,4,5,6)
  */
 
 #include <Servo.h>
+#include <OneWire.h>
+#include <DallasTemperature.h>
 
-// Motor pinleri ve konfigürasyon
-const int MOTOR_PINS[] = {2, 4, 5, 6, 3, 7}; // M1,M2,M3,M4,M5,M6
-const int NUM_MOTORS = 6;
-const int RELAY_BRAKE_PIN = 11; // Relay brake kontrol pini
+// Pin definitions
+#define ONE_WIRE_BUS 8
+#define BUZZER_PIN 9
+#define RELAY_BRAKE_PIN 11
 
-// Servo nesneleri (ESC kontrolü için)
+// Temperature sensor
+OneWire oneWire(ONE_WIRE_BUS);
+DallasTemperature tempSensor(&oneWire);
+
+// Motor configuration
+const byte MOTOR_PINS[] = {2, 4, 5, 6, 3, 7}; // M1-M6
+const byte NUM_MOTORS = 6;
+const int ESC_MIN = 1000, ESC_MAX = 2000;
+
+// Motor objects and states
 Servo motors[NUM_MOTORS];
+bool motorStates[NUM_MOTORS];
+byte motorSpeeds[NUM_MOTORS];
+byte levitationGroupSpeed = 0;
+byte thrustGroupSpeed = 0;
 
-// Motor durumları ve hızları
-bool motorStates[NUM_MOTORS] = {false};
-int motorSpeeds[NUM_MOTORS] = {0}; // Her motorun kendi hızı (0-100)
+// System state (packed into bytes)
+struct SystemState {
+  bool armed : 1;
+  bool brakeActive : 1;
+  bool relayBrakeActive : 1;
+  bool temperatureAlarm : 1;
+  bool buzzerActive : 1;
+  byte reserved : 3;
+} sysState = {0};
 
-// Grup hızları
-int levitationGroupSpeed = 0;  // Motorlar 1-4 (pins 2,4,5,6)
-int thrustGroupSpeed = 0;      // Motorlar 5-6 (pins 3,7)
-
-// Sistem durumu
-bool systemArmed = false;
-bool brakeActive = false;
-bool relayBrakeActive = false;
-unsigned long lastHeartbeat = 0;
+// Temperature and timing
+float currentTemp = 25.0;
+unsigned long lastTempRead = 0;
+unsigned long lastBuzzerToggle = 0;
 unsigned long lastCommandTime = 0;
+unsigned long lastHeartbeat = 0;
 
-// ESC kalibrasyonu
-const int ESC_MIN = 1000;
-const int ESC_MAX = 2000;
-const int ESC_NEUTRAL = 1500;
-
-// Timing konfigürasyonu
+// Constants
+const float TEMP_ALARM = 55.0;
+const float TEMP_SAFE = 50.0;
+const unsigned long TEMP_INTERVAL = 2000;
+const unsigned long BUZZER_INTERVAL = 500;
 const unsigned long COMMAND_COOLDOWN = 25;
 const unsigned long HEARTBEAT_INTERVAL = 30000;
 
 void setup() {
   Serial.begin(115200);
-  Serial.setTimeout(500); // 500ms timeout - daha güvenilir
+  Serial.setTimeout(500);
   
-  Serial.println("SpectraLoop Motor Control v3.2");
-  Serial.println("Python Backend Compatible");
-  Serial.println("6-Motor + Relay Brake - MPU6050 Removed");
-  
-  // Relay brake pin setup
+  // Initialize pins
+  pinMode(BUZZER_PIN, OUTPUT);
   pinMode(RELAY_BRAKE_PIN, OUTPUT);
-  digitalWrite(RELAY_BRAKE_PIN, LOW); // Relay başlangıçta kapalı
-  relayBrakeActive = false;
+  digitalWrite(BUZZER_PIN, LOW);
+  digitalWrite(RELAY_BRAKE_PIN, LOW);
   
-  // Motor başlatma
-  for (int i = 0; i < NUM_MOTORS; i++) {
+  // Initialize temperature sensor
+  tempSensor.begin();
+  
+  // Initialize motors
+  for (byte i = 0; i < NUM_MOTORS; i++) {
     motors[i].attach(MOTOR_PINS[i]);
     motors[i].writeMicroseconds(ESC_MIN);
     motorStates[i] = false;
     motorSpeeds[i] = 0;
   }
   
-  delay(2000); // ESC kalibrasyonu
+  delay(2000); // ESC calibration
   
-  Serial.println("READY");
-  Serial.println("Pin Mapping:");
-  Serial.println("Thrust: M5->Pin3, M6->Pin7");
-  Serial.println("Levitation: M1->Pin2, M2->Pin4, M3->Pin5, M4->Pin6");
-  Serial.println("Relay Brake: Pin8");
-  Serial.println();
-  Serial.println("Commands:");
-  Serial.println("ARM/DISARM");
-  Serial.println("MOTOR:1:START:50/MOTOR:1:STOP/MOTOR:1:SPEED:75");
-  Serial.println("LEV_GROUP:START:60/LEV_GROUP:STOP/LEV_GROUP:SPEED:80");
-  Serial.println("THR_GROUP:START:70/THR_GROUP:STOP/THR_GROUP:SPEED:90");
-  Serial.println("BRAKE_ON/BRAKE_OFF");
-  Serial.println("RELAY_BRAKE_ON/RELAY_BRAKE_OFF");
-  Serial.println("EMERGENCY_STOP");
-  Serial.println("STATUS/PING");
-  Serial.flush();
+  // First temperature reading
+  readTemperature();
+  
+  Serial.println(F("SpectraLoop v3.3 - Temperature Safety"));
+  Serial.println(F("READY"));
 }
 
 void loop() {
-  unsigned long currentTime = millis();
+  unsigned long now = millis();
   
-  // Komut işleme
-  if (Serial.available() > 0 && (currentTime - lastCommandTime) > COMMAND_COOLDOWN) {
-    String command = Serial.readStringUntil('\n');
-    command.trim();
-    if (command.length() > 0) {
-      processCommand(command);
-      lastCommandTime = currentTime;
+  // Temperature monitoring
+  if (now - lastTempRead > TEMP_INTERVAL) {
+    readTemperature();
+    checkTempSafety();
+    lastTempRead = now;
+  }
+  
+  // Buzzer control
+  if (sysState.temperatureAlarm && sysState.buzzerActive) {
+    if (now - lastBuzzerToggle > BUZZER_INTERVAL) {
+      static bool buzzerState = false;
+      buzzerState = !buzzerState;
+      digitalWrite(BUZZER_PIN, buzzerState);
+      lastBuzzerToggle = now;
     }
+  }
+  
+  // Command processing
+  if (Serial.available() && (now - lastCommandTime) > COMMAND_COOLDOWN) {
+    processCommand();
+    lastCommandTime = now;
   }
   
   // Heartbeat
-  if (currentTime - lastHeartbeat > HEARTBEAT_INTERVAL) {
-    lastHeartbeat = currentTime;
+  if (now - lastHeartbeat > HEARTBEAT_INTERVAL) {
     sendHeartbeat();
+    lastHeartbeat = now;
   }
-  
-  delay(5);
 }
 
-void processCommand(String command) {
-  Serial.print("ACK:");
-  Serial.println(command);
+void readTemperature() {
+  tempSensor.requestTemperatures();
+  float newTemp = tempSensor.getTempCByIndex(0);
+  if (newTemp > -50 && newTemp < 100) {
+    currentTemp = newTemp;
+  }
+}
+
+void checkTempSafety() {
+  if (currentTemp >= TEMP_ALARM && !sysState.temperatureAlarm) {
+    sysState.temperatureAlarm = true;
+    sysState.buzzerActive = true;
+    emergencyStopTemp();
+    Serial.print(F("TEMP_ALARM:"));
+    Serial.println(currentTemp);
+  } else if (currentTemp <= TEMP_SAFE && sysState.temperatureAlarm) {
+    sysState.temperatureAlarm = false;
+    sysState.buzzerActive = false;
+    digitalWrite(BUZZER_PIN, LOW);
+    Serial.print(F("TEMP_SAFE:"));
+    Serial.println(currentTemp);
+  }
+}
+
+void emergencyStopTemp() {
+  sysState.armed = false;
+  sysState.brakeActive = true;
+  sysState.relayBrakeActive = false;
+  digitalWrite(RELAY_BRAKE_PIN, LOW);
   
-  if (command == "PING") {
-    Serial.println("PONG:v3.2");
-    
-  } else if (command == "ARM") {
-    armSystem();
-    
-  } else if (command == "DISARM") {
-    disarmSystem();
-    
-  } else if (command == "STATUS") {
-    sendStatus();
-    
-  } else if (command == "EMERGENCY_STOP") {
-    emergencyStop();
-    
-  } else if (command == "BRAKE_ON") {
-    setBrake(true);
-    
-  } else if (command == "BRAKE_OFF") {
-    setBrake(false);
-    
-  } else if (command == "RELAY_BRAKE_ON") {
-    setRelayBrake(true);
-    
-  } else if (command == "RELAY_BRAKE_OFF") {
-    setRelayBrake(false);
-    
-  } else if (command.startsWith("MOTOR:")) {
-    parseIndividualMotorCommand(command);
-    
-  } else if (command.startsWith("LEV_GROUP:")) {
-    parseLevitationGroupCommand(command);
-    
-  } else if (command.startsWith("THR_GROUP:")) {
-    parseThrustGroupCommand(command);
-    
-  } else {
-    Serial.println("ERROR:Unknown_command");
+  for (byte i = 0; i < NUM_MOTORS; i++) {
+    setMotorSpeed(i, 0);
+    motorStates[i] = false;
+    motorSpeeds[i] = 0;
   }
   
-  Serial.flush();
+  levitationGroupSpeed = thrustGroupSpeed = 0;
+  Serial.println(F("EMERGENCY_STOP:TEMPERATURE"));
+}
+
+void processCommand() {
+  String cmd = Serial.readStringUntil('\n');
+  cmd.trim();
+  if (cmd.length() == 0) return;
+
+  // Her komut için ACK ve mevcut sıcaklık değerini yazdır
+  Serial.print(F("ACK:"));
+  Serial.print(cmd);
+  Serial.print(F(" [TEMP:"));
+  Serial.print(currentTemp);
+  Serial.println(F("]"));
+
+  if (cmd == F("PING")) {
+    Serial.println(F("PONG:v3.3"));
+  } 
+  else if (cmd == F("ARM")) {
+    armSystem();
+  } 
+  else if (cmd == F("DISARM")) {
+    disarmSystem();
+  } 
+  else if (cmd == F("STATUS")) {
+    sendStatus();
+  } 
+  else if (cmd == F("TEMP_STATUS")) {
+    sendTempStatus();
+  } 
+  else if (cmd == F("TEMP_DEBUG")) {
+    // Yeni debug komutu
+    Serial.println(F("=== TEMPERATURE DEBUG ==="));
+    Serial.print(F("Raw Temperature: "));
+    Serial.println(currentTemp);
+    Serial.print(F("Sensor Status: "));
+    float testTemp = tempSensor.getTempCByIndex(0);
+    Serial.println(testTemp);
+    Serial.print(F("Temperature Alarm: "));
+    Serial.println(sysState.temperatureAlarm);
+    Serial.print(F("Buzzer Active: "));
+    Serial.println(sysState.buzzerActive);
+    Serial.print(F("Last Read Time: "));
+    Serial.println(lastTempRead);
+    Serial.println(F("=== DEBUG END ==="));
+  } 
+  else if (cmd == F("BUZZER_OFF")) {
+    if (!sysState.temperatureAlarm) {
+      sysState.buzzerActive = false;
+      digitalWrite(BUZZER_PIN, LOW);
+      Serial.println(F("BUZZER_OFF"));
+    }
+  } 
+  else if (cmd == F("EMERGENCY_STOP")) {
+    emergencyStop();
+  } 
+  else if (cmd == F("BRAKE_ON")) {
+    setBrake(true);
+  } 
+  else if (cmd == F("BRAKE_OFF")) {
+    setBrake(false);
+  } 
+  else if (cmd == F("RELAY_BRAKE_ON")) {
+    setRelayBrake(true);
+  } 
+  else if (cmd == F("RELAY_BRAKE_OFF")) {
+    setRelayBrake(false);
+  } 
+  else if (cmd.startsWith(F("MOTOR:"))) {
+    parseMotorCmd(cmd);
+  } 
+  else if (cmd.startsWith(F("LEV_GROUP:"))) {
+    parseLevCmd(cmd);
+  } 
+  else if (cmd.startsWith(F("THR_GROUP:"))) {
+    parseThrCmd(cmd);
+  }
 }
 
 void armSystem() {
-  if (brakeActive) {
-    Serial.println("ERROR:Cannot_arm_brake_active");
+  if (sysState.brakeActive || !sysState.relayBrakeActive || 
+      sysState.temperatureAlarm || currentTemp > TEMP_ALARM - 5) {
+    Serial.println(F("ERROR:Cannot_arm"));
     return;
   }
-  
-  if (!relayBrakeActive) {
-    Serial.println("ERROR:Cannot_arm_relay_inactive");
-    return;
-  }
-  
-  systemArmed = true;
-  Serial.println("ARMED");
+  sysState.armed = true;
+  Serial.println(F("ARMED"));
 }
 
 void disarmSystem() {
-  systemArmed = false;
-  for (int i = 0; i < NUM_MOTORS; i++) {
+  sysState.armed = false;
+  for (byte i = 0; i < NUM_MOTORS; i++) {
     setMotorSpeed(i, 0);
     motorStates[i] = false;
     motorSpeeds[i] = 0;
   }
-  levitationGroupSpeed = 0;
-  thrustGroupSpeed = 0;
-  Serial.println("DISARMED");
+  levitationGroupSpeed = thrustGroupSpeed = 0;
+  Serial.println(F("DISARMED"));
 }
 
 void setRelayBrake(bool active) {
-  relayBrakeActive = active;
-  digitalWrite(RELAY_BRAKE_PIN, active ? HIGH : LOW);
+  if (active && sysState.temperatureAlarm) {
+    Serial.println(F("ERROR:Temp_alarm"));
+    return;
+  }
+  
+  sysState.relayBrakeActive = active;
+  digitalWrite(RELAY_BRAKE_PIN, active);
   
   if (!active) {
-    // Relay devre dışı bırakıldığında tüm motorları durdur
-    for (int i = 0; i < NUM_MOTORS; i++) {
+    for (byte i = 0; i < NUM_MOTORS; i++) {
       setMotorSpeed(i, 0);
       motorStates[i] = false;
       motorSpeeds[i] = 0;
     }
-    levitationGroupSpeed = 0;
-    thrustGroupSpeed = 0;
-    systemArmed = false; // Sistemi de disarm et
+    levitationGroupSpeed = thrustGroupSpeed = 0;
+    sysState.armed = false;
   }
   
-  Serial.print("RELAY_BRAKE:");
-  Serial.println(active ? "ON" : "OFF");
+  Serial.print(F("RELAY_BRAKE:"));
+  Serial.println(active ? F("ON") : F("OFF"));
 }
 
-void parseIndividualMotorCommand(String command) {
-  if (!systemArmed || brakeActive || !relayBrakeActive) {
-    Serial.println("ERROR:System_not_ready");
-    return;
-  }
+void parseMotorCmd(String cmd) {
+  if (!canStartMotors()) return;
   
-  // Format: MOTOR:1:START:50 / MOTOR:1:STOP / MOTOR:1:SPEED:75
-  int firstColon = command.indexOf(':');
-  int secondColon = command.indexOf(':', firstColon + 1);
-  int thirdColon = command.indexOf(':', secondColon + 1);
+  int colon1 = cmd.indexOf(':');
+  int colon2 = cmd.indexOf(':', colon1 + 1);
+  int colon3 = cmd.indexOf(':', colon2 + 1);
   
-  if (firstColon == -1 || secondColon == -1) {
-    Serial.println("ERROR:Invalid_motor_command");
-    return;
-  }
+  byte motorNum = cmd.substring(colon1 + 1, colon2).toInt();
+  String action = cmd.substring(colon2 + 1, colon3 > 0 ? colon3 : cmd.length());
   
-  int motorNum = command.substring(firstColon + 1, secondColon).toInt();
-  String action = command.substring(secondColon + 1, thirdColon != -1 ? thirdColon : command.length());
+  if (motorNum < 1 || motorNum > NUM_MOTORS) return;
+  byte idx = motorNum - 1;
   
-  if (motorNum < 1 || motorNum > NUM_MOTORS) {
-    Serial.println("ERROR:Invalid_motor_number");
-    return;
-  }
-  
-  int motorIndex = motorNum - 1;
-  
-  if (action == "START") {
-    int speed = 50; // Default
-    if (thirdColon != -1) {
-      speed = command.substring(thirdColon + 1).toInt();
-    }
+  if (action == F("START")) {
+    byte speed = (colon3 > 0) ? cmd.substring(colon3 + 1).toInt() : 50;
+    if (speed > 100) speed = 100;
     
-    if (speed < 0 || speed > 100) {
-      Serial.println("ERROR:Invalid_speed");
-      return;
-    }
+    motorStates[idx] = true;
+    motorSpeeds[idx] = speed;
+    setMotorSpeed(idx, speed);
     
-    motorStates[motorIndex] = true;
-    motorSpeeds[motorIndex] = speed;
-    setMotorSpeed(motorIndex, speed);
-    
-    Serial.print("MOTOR_STARTED:");
+    Serial.print(F("MOTOR_STARTED:"));
     Serial.print(motorNum);
-    Serial.print(":");
+    Serial.print(':');
     Serial.println(speed);
     
-  } else if (action == "STOP") {
-    motorStates[motorIndex] = false;
-    motorSpeeds[motorIndex] = 0;
-    setMotorSpeed(motorIndex, 0);
+  } else if (action == F("STOP")) {
+    motorStates[idx] = false;
+    motorSpeeds[idx] = 0;
+    setMotorSpeed(idx, 0);
     
-    Serial.print("MOTOR_STOPPED:");
+    Serial.print(F("MOTOR_STOPPED:"));
     Serial.println(motorNum);
     
-  } else if (action == "SPEED") {
-    if (thirdColon == -1) {
-      Serial.println("ERROR:Speed_missing");
-      return;
-    }
+  } else if (action == F("SPEED") && colon3 > 0) {
+    byte speed = cmd.substring(colon3 + 1).toInt();
+    if (speed > 100) speed = 100;
     
-    int speed = command.substring(thirdColon + 1).toInt();
-    if (speed < 0 || speed > 100) {
-      Serial.println("ERROR:Invalid_speed");
-      return;
-    }
+    motorSpeeds[idx] = speed;
+    if (motorStates[idx]) setMotorSpeed(idx, speed);
     
-    motorSpeeds[motorIndex] = speed;
-    if (motorStates[motorIndex]) {
-      setMotorSpeed(motorIndex, speed);
-    }
-    
-    Serial.print("MOTOR_SPEED:");
+    Serial.print(F("MOTOR_SPEED:"));
     Serial.print(motorNum);
-    Serial.print(":");
+    Serial.print(':');
     Serial.println(speed);
   }
 }
 
-void parseLevitationGroupCommand(String command) {
-  if (!systemArmed || brakeActive || !relayBrakeActive) {
-    Serial.println("ERROR:System_not_ready");
-    return;
-  }
+void parseLevCmd(String cmd) {
+  if (!canStartMotors()) return;
   
-  int firstColon = command.indexOf(':');
-  int secondColon = command.indexOf(':', firstColon + 1);
+  int colon1 = cmd.indexOf(':');
+  int colon2 = cmd.indexOf(':', colon1 + 1);
   
-  if (firstColon == -1) {
-    Serial.println("ERROR:Invalid_command");
-    return;
-  }
+  String action = cmd.substring(colon1 + 1, colon2 > 0 ? colon2 : cmd.length());
   
-  String action = command.substring(firstColon + 1, secondColon != -1 ? secondColon : command.length());
-  
-  if (action == "START") {
-    int speed = 50; // Default
-    if (secondColon != -1) {
-      speed = command.substring(secondColon + 1).toInt();
-    }
-    
-    if (speed < 0 || speed > 100) {
-      Serial.println("ERROR:Invalid_speed");
-      return;
-    }
+  if (action == F("START")) {
+    byte speed = (colon2 > 0) ? cmd.substring(colon2 + 1).toInt() : 50;
+    if (speed > 100) speed = 100;
     
     levitationGroupSpeed = speed;
-    // Motorlar 1,2,3,4 (index 0,1,2,3)
-    for (int i = 0; i < 4; i++) {
+    for (byte i = 0; i < 4; i++) {
       motorStates[i] = true;
       motorSpeeds[i] = speed;
       setMotorSpeed(i, speed);
     }
     
-    Serial.print("LEV_GROUP_STARTED:");
+    Serial.print(F("LEV_GROUP_STARTED:"));
     Serial.println(speed);
     
-  } else if (action == "STOP") {
-    for (int i = 0; i < 4; i++) {
+  } else if (action == F("STOP")) {
+    for (byte i = 0; i < 4; i++) {
       motorStates[i] = false;
       motorSpeeds[i] = 0;
       setMotorSpeed(i, 0);
     }
     levitationGroupSpeed = 0;
-    Serial.println("LEV_GROUP_STOPPED");
+    Serial.println(F("LEV_GROUP_STOPPED"));
     
-  } else if (action == "SPEED") {
-    if (secondColon == -1) {
-      Serial.println("ERROR:Speed_missing");
-      return;
-    }
-    
-    int speed = command.substring(secondColon + 1).toInt();
-    if (speed < 0 || speed > 100) {
-      Serial.println("ERROR:Invalid_speed");
-      return;
-    }
+  } else if (action == F("SPEED") && colon2 > 0) {
+    byte speed = cmd.substring(colon2 + 1).toInt();
+    if (speed > 100) speed = 100;
     
     levitationGroupSpeed = speed;
-    for (int i = 0; i < 4; i++) {
+    for (byte i = 0; i < 4; i++) {
       if (motorStates[i]) {
         motorSpeeds[i] = speed;
         setMotorSpeed(i, speed);
       }
     }
     
-    Serial.print("LEV_GROUP_SPEED:");
+    Serial.print(F("LEV_GROUP_SPEED:"));
     Serial.println(speed);
   }
 }
 
-void parseThrustGroupCommand(String command) {
-  if (!systemArmed || brakeActive || !relayBrakeActive) {
-    Serial.println("ERROR:System_not_ready");
-    return;
-  }
+void parseThrCmd(String cmd) {
+  if (!canStartMotors()) return;
   
-  int firstColon = command.indexOf(':');
-  int secondColon = command.indexOf(':', firstColon + 1);
+  int colon1 = cmd.indexOf(':');
+  int colon2 = cmd.indexOf(':', colon1 + 1);
   
-  if (firstColon == -1) {
-    Serial.println("ERROR:Invalid_command");
-    return;
-  }
+  String action = cmd.substring(colon1 + 1, colon2 > 0 ? colon2 : cmd.length());
   
-  String action = command.substring(firstColon + 1, secondColon != -1 ? secondColon : command.length());
-  
-  if (action == "START") {
-    int speed = 50; // Default
-    if (secondColon != -1) {
-      speed = command.substring(secondColon + 1).toInt();
-    }
-    
-    if (speed < 0 || speed > 100) {
-      Serial.println("ERROR:Invalid_speed");
-      return;
-    }
+  if (action == F("START")) {
+    byte speed = (colon2 > 0) ? cmd.substring(colon2 + 1).toInt() : 50;
+    if (speed > 100) speed = 100;
     
     thrustGroupSpeed = speed;
-    // Motorlar 5,6 (index 4,5)
-    for (int i = 4; i < 6; i++) {
+    for (byte i = 4; i < 6; i++) {
       motorStates[i] = true;
       motorSpeeds[i] = speed;
       setMotorSpeed(i, speed);
     }
     
-    Serial.print("THR_GROUP_STARTED:");
+    Serial.print(F("THR_GROUP_STARTED:"));
     Serial.println(speed);
     
-  } else if (action == "STOP") {
-    for (int i = 4; i < 6; i++) {
+  } else if (action == F("STOP")) {
+    for (byte i = 4; i < 6; i++) {
       motorStates[i] = false;
       motorSpeeds[i] = 0;
       setMotorSpeed(i, 0);
     }
     thrustGroupSpeed = 0;
-    Serial.println("THR_GROUP_STOPPED");
+    Serial.println(F("THR_GROUP_STOPPED"));
     
-  } else if (action == "SPEED") {
-    if (secondColon == -1) {
-      Serial.println("ERROR:Speed_missing");
-      return;
-    }
-    
-    int speed = command.substring(secondColon + 1).toInt();
-    if (speed < 0 || speed > 100) {
-      Serial.println("ERROR:Invalid_speed");
-      return;
-    }
+  } else if (action == F("SPEED") && colon2 > 0) {
+    byte speed = cmd.substring(colon2 + 1).toInt();
+    if (speed > 100) speed = 100;
     
     thrustGroupSpeed = speed;
-    for (int i = 4; i < 6; i++) {
+    for (byte i = 4; i < 6; i++) {
       if (motorStates[i]) {
         motorSpeeds[i] = speed;
         setMotorSpeed(i, speed);
       }
     }
     
-    Serial.print("THR_GROUP_SPEED:");
+    Serial.print(F("THR_GROUP_SPEED:"));
     Serial.println(speed);
   }
+}
+
+bool canStartMotors() {
+  if (!sysState.armed || sysState.brakeActive || !sysState.relayBrakeActive || 
+      sysState.temperatureAlarm || currentTemp > TEMP_ALARM - 3) {
+    Serial.println(F("ERROR:Cannot_start"));
+    return false;
+  }
+  return true;
 }
 
 void setBrake(bool active) {
-  brakeActive = active;
-  
+  sysState.brakeActive = active;
   if (active) {
-    for (int i = 0; i < NUM_MOTORS; i++) {
+    for (byte i = 0; i < NUM_MOTORS; i++) {
       setMotorSpeed(i, 0);
       motorStates[i] = false;
       motorSpeeds[i] = 0;
     }
-    levitationGroupSpeed = 0;
-    thrustGroupSpeed = 0;
-    Serial.println("BRAKE_ON");
-  } else {
-    Serial.println("BRAKE_OFF");
+    levitationGroupSpeed = thrustGroupSpeed = 0;
   }
+  Serial.println(active ? F("BRAKE_ON") : F("BRAKE_OFF"));
 }
 
 void emergencyStop() {
-  systemArmed = false;
-  brakeActive = true;
-  relayBrakeActive = false;
-  digitalWrite(RELAY_BRAKE_PIN, LOW); // Relay'i kapat
+  sysState.armed = false;
+  sysState.brakeActive = true;
+  sysState.relayBrakeActive = false;
+  digitalWrite(RELAY_BRAKE_PIN, LOW);
   
-  for (int i = 0; i < NUM_MOTORS; i++) {
+  for (byte i = 0; i < NUM_MOTORS; i++) {
     setMotorSpeed(i, 0);
     motorStates[i] = false;
     motorSpeeds[i] = 0;
   }
   
-  levitationGroupSpeed = 0;
-  thrustGroupSpeed = 0;
-  
-  Serial.println("EMERGENCY_STOP");
+  levitationGroupSpeed = thrustGroupSpeed = 0;
+  Serial.println(F("EMERGENCY_STOP"));
 }
 
-void setMotorSpeed(int motorIndex, int speedPercent) {
-  if (motorIndex < 0 || motorIndex >= NUM_MOTORS) return;
-  
-  int pwmValue;
-  if (speedPercent == 0) {
-    pwmValue = ESC_MIN;
-  } else {
-    pwmValue = map(speedPercent, 0, 100, ESC_MIN + 50, ESC_MAX);
-  }
-  
-  motors[motorIndex].writeMicroseconds(pwmValue);
+void setMotorSpeed(byte idx, byte speed) {
+  if (idx >= NUM_MOTORS) return;
+  int pwm = (speed == 0) ? ESC_MIN : map(speed, 0, 100, ESC_MIN + 50, ESC_MAX);
+  motors[idx].writeMicroseconds(pwm);
+}
+
+void sendTempStatus() {
+  Serial.print(F("Temperature:"));
+  Serial.println(currentTemp);
+  Serial.print(F("TempAlarm:"));
+  Serial.println(sysState.temperatureAlarm);
+  Serial.print(F("BuzzerActive:"));
+  Serial.println(sysState.buzzerActive);
 }
 
 void sendStatus() {
-  Serial.println("STATUS_START");
-  Serial.print("Armed:");
-  Serial.println(systemArmed ? "1" : "0");
-  Serial.print("Brake:");
-  Serial.println(brakeActive ? "1" : "0");
-  Serial.print("RelayBrake:");
-  Serial.println(relayBrakeActive ? "1" : "0");
-  Serial.print("LevGroupSpeed:");
+  Serial.println(F("STATUS_START"));
+  Serial.print(F("Armed:"));
+  Serial.println(sysState.armed);
+  Serial.print(F("Brake:"));
+  Serial.println(sysState.brakeActive);
+  Serial.print(F("RelayBrake:"));
+  Serial.println(sysState.relayBrakeActive);
+  Serial.print(F("Temperature:"));
+  Serial.println(currentTemp);
+  Serial.print(F("TempAlarm:"));
+  Serial.println(sysState.temperatureAlarm);
+  Serial.print(F("BuzzerActive:"));
+  Serial.println(sysState.buzzerActive);
+  Serial.print(F("LevGroupSpeed:"));
   Serial.println(levitationGroupSpeed);
-  Serial.print("ThrGroupSpeed:");
+  Serial.print(F("ThrGroupSpeed:"));
   Serial.println(thrustGroupSpeed);
   
-  Serial.print("Motors:");
-  for (int i = 0; i < NUM_MOTORS; i++) {
-    Serial.print(motorStates[i] ? "1" : "0");
-    if (i < NUM_MOTORS - 1) Serial.print(",");
+  Serial.print(F("Motors:"));
+  for (byte i = 0; i < NUM_MOTORS; i++) {
+    Serial.print(motorStates[i] ? '1' : '0');
+    if (i < NUM_MOTORS - 1) Serial.print(',');
   }
   Serial.println();
   
-  Serial.print("IndividualSpeeds:");
-  for (int i = 0; i < NUM_MOTORS; i++) {
+  Serial.print(F("IndividualSpeeds:"));
+  for (byte i = 0; i < NUM_MOTORS; i++) {
     Serial.print(motorSpeeds[i]);
-    if (i < NUM_MOTORS - 1) Serial.print(",");
+    if (i < NUM_MOTORS - 1) Serial.print(',');
   }
   Serial.println();
   
-  Serial.print("PinMapping:");
-  for (int i = 0; i < NUM_MOTORS; i++) {
-    Serial.print(MOTOR_PINS[i]);
-    if (i < NUM_MOTORS - 1) Serial.print(",");
-  }
-  Serial.println();
-  
-  Serial.println("STATUS_END");
+  Serial.println(F("STATUS_END"));
 }
 
 void sendHeartbeat() {
-  Serial.print("HEARTBEAT:");
+  Serial.print(F("HEARTBEAT:"));
   Serial.print(millis() / 1000);
-  Serial.print(",");
-  Serial.print(systemArmed ? "1" : "0");
-  Serial.print(",");
-  Serial.print(brakeActive ? "1" : "0");
-  Serial.print(",");
-  Serial.print(relayBrakeActive ? "1" : "0");
+  Serial.print(',');
+  Serial.print(sysState.armed);
+  Serial.print(',');
+  Serial.print(sysState.brakeActive);
+  Serial.print(',');
+  Serial.print(sysState.relayBrakeActive);
+  Serial.print(',');
+  Serial.print(currentTemp);
+  Serial.print(',');
+  Serial.print(sysState.temperatureAlarm);
   
-  int activeCount = 0;
-  for (int i = 0; i < NUM_MOTORS; i++) {
+  byte activeCount = 0;
+  for (byte i = 0; i < NUM_MOTORS; i++) {
     if (motorStates[i]) activeCount++;
   }
-  Serial.print(",");
+  Serial.print(',');
   Serial.println(activeCount);
 }
