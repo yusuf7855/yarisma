@@ -1,13 +1,13 @@
 /*
- * SpectraLoop Frontend JavaScript OPTIMIZED v3.4 - Real-time Temperature Updates
- * Ultra-fast temperature monitoring with sub-second updates
- * OPTIMIZED for minimal latency and maximum responsiveness
+ * SpectraLoop Frontend JavaScript DUAL TEMPERATURE v3.5 - Ultra-fast Updates
+ * Dual DS18B20 sensor monitoring with redundant safety
+ * Individual sensor tracking + combined safety logic
  */
 
-// Configuration - OPTIMIZED
-const BACKEND_URL = 'http://10.237.49.82:5001';
+// Configuration - DUAL SENSOR OPTIMIZED
+const BACKEND_URL = 'http://192.168.241.82:5001';
 
-// System State Management - SAME
+// System State Management - DUAL TEMPERATURE ENHANCED
 let systemState = {
     armed: false,
     brakeActive: false,
@@ -17,19 +17,29 @@ let systemState = {
     individualMotorSpeeds: {1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0},
     groupSpeeds: {levitation: 0, thrust: 0},
     connectionStatus: {backend: false, arduino: false},
+    // DUAL TEMPERATURE STATE - ENHANCED
     temperature: {
-        current: 25.0,
+        sensor1_temp: 25.0,           // Primary sensor (Pin 8)
+        sensor2_temp: 25.0,           // Secondary sensor (Pin 13)  
+        current: 25.0,                // Max of both for safety
         alarm: false,
         buzzer_active: false,
         max_reached: 25.0,
+        max_sensor1: 25.0,            // Individual max temps
+        max_sensor2: 25.0,            // Individual max temps
         last_update: null,
         emergency_active: false,
         alarm_count: 0,
-        update_frequency: 0.0  // NEW
+        update_frequency: 0.0,
+        sensor1_connected: true,      // Connection status
+        sensor2_connected: true,      // Connection status
+        sensor_failure_count: 0,     // Failure tracking
+        temperature_difference: 0.0,  // Difference between sensors
+        dual_sensor_mode: true       // Operating in dual mode
     }
 };
 
-// Application State - OPTIMIZED
+// Application State - DUAL SENSOR OPTIMIZED
 let appState = {
     requestCount: 0,
     errorCount: 0,
@@ -37,34 +47,41 @@ let appState = {
     consecutiveErrors: 0,
     commandLog: [],
     statusUpdateInterval: null,
-    temperatureUpdateInterval: null,  // NEW: Separate temperature polling
+    temperatureUpdateInterval: null,
+    realtimeTemperatureInterval: null,  // NEW: Ultra-fast realtime updates
     isInitialized: false,
     lastTempAlarmNotified: false,
     temperatureHistory: [],
     tempWarningShown: false,
+    sensorDifferenceWarningShown: false, // NEW: Track sensor diff warnings
     performanceStats: {
         temperatureUpdatesCount: 0,
         lastTempUpdateTime: 0,
-        averageUpdateFrequency: 0
+        averageUpdateFrequency: 0,
+        sensor1UpdatesCount: 0,      // NEW: Individual sensor stats
+        sensor2UpdatesCount: 0,      // NEW: Individual sensor stats
+        dualSensorUpdatesCount: 0    // NEW: Dual update stats
     }
 };
 
-// Constants - OPTIMIZED
+// Constants - DUAL SENSOR OPTIMIZED
 const CONFIG = {
-    REQUEST_THROTTLE: 25,              // Reduced from 50ms
+    REQUEST_THROTTLE: 25,
     MAX_RETRIES: 3,
-    STATUS_UPDATE_INTERVAL: 1000,      // Reduced from 2000ms 
-    TEMPERATURE_UPDATE_INTERVAL: 500,  // NEW: 500ms for temperature only
-    CONNECTION_TIMEOUT: 5000,          // Reduced from 8000ms
-    MAX_LOG_ENTRIES: 25,
+    STATUS_UPDATE_INTERVAL: 1500,        // General status
+    TEMPERATURE_UPDATE_INTERVAL: 800,    // Dual temp updates
+    REALTIME_TEMP_INTERVAL: 400,         // NEW: Ultra-fast realtime
+    CONNECTION_TIMEOUT: 4000,
+    MAX_LOG_ENTRIES: 30,
     NOTIFICATION_TIMEOUT: 4000,
     TEMP_SAFE_THRESHOLD: 50,
     TEMP_WARNING_THRESHOLD: 45,
     TEMP_ALARM_THRESHOLD: 55,
-    PERFORMANCE_LOG_INTERVAL: 5000     // NEW: Performance logging
+    TEMP_DIFF_WARNING_THRESHOLD: 5.0,    // NEW: Sensor difference warning
+    PERFORMANCE_LOG_INTERVAL: 10000
 };
 
-// Utility Functions - SAME (keeping existing utilities)
+// Utility Functions - SAME
 class Utils {
     static throttle(func, delay) {
         let timeoutId;
@@ -109,21 +126,33 @@ class Utils {
     }
 }
 
-// Temperature Manager - ULTRA-OPTIMIZED
-class TemperatureManager {
-    static updateTemperatureDisplay(tempData) {
+// DUAL Temperature Manager - COMPLETELY ENHANCED
+class DualTemperatureManager {
+    static updateDualTemperatureDisplay(tempData) {
         if (!tempData) return;
         
-        const currentTemp = tempData.current || 25.0;
+        // Extract dual temperature data
+        const sensor1Temp = tempData.sensor1_temp || 25.0;
+        const sensor2Temp = tempData.sensor2_temp || 25.0;
+        const currentTemp = tempData.current || Math.max(sensor1Temp, sensor2Temp);
         const tempAlarm = tempData.alarm || false;
         const buzzerActive = tempData.buzzer_active || false;
         const maxTemp = tempData.max_reached || currentTemp;
+        const maxSensor1 = tempData.max_sensor1 || sensor1Temp;
+        const maxSensor2 = tempData.max_sensor2 || sensor2Temp;
         const alarmCount = tempData.alarm_count || 0;
         const emergencyActive = tempData.emergency_active || false;
-        const updateFrequency = tempData.update_frequency || 0.0;  // NEW
+        const updateFrequency = tempData.update_frequency || 0.0;
+        const sensor1Connected = tempData.sensor1_connected !== undefined ? tempData.sensor1_connected : true;
+        const sensor2Connected = tempData.sensor2_connected !== undefined ? tempData.sensor2_connected : true;
+        const tempDifference = Math.abs(sensor1Temp - sensor2Temp);
         
         // Update performance stats
         appState.performanceStats.temperatureUpdatesCount++;
+        appState.performanceStats.dualSensorUpdatesCount++;
+        if (sensor1Connected) appState.performanceStats.sensor1UpdatesCount++;
+        if (sensor2Connected) appState.performanceStats.sensor2UpdatesCount++;
+        
         const now = Date.now();
         if (appState.performanceStats.lastTempUpdateTime > 0) {
             const timeDiff = (now - appState.performanceStats.lastTempUpdateTime) / 1000;
@@ -131,64 +160,121 @@ class TemperatureManager {
         }
         appState.performanceStats.lastTempUpdateTime = now;
         
-        // Ultra-fast DOM updates
-        this.updateTemperatureElements(currentTemp, tempAlarm, emergencyActive);
-        this.updateTemperatureDetails(maxTemp, alarmCount, buzzerActive, updateFrequency);
+        // Update all dual temperature displays
+        this.updateDualSensorElements(sensor1Temp, sensor2Temp, currentTemp, sensor1Connected, sensor2Connected);
         this.updateTemperatureStatus(currentTemp, tempAlarm, emergencyActive);
+        this.updateTemperatureDetails(maxTemp, maxSensor1, maxSensor2, alarmCount, buzzerActive, updateFrequency, tempDifference);
+        this.updateSensorConnectionStatus(sensor1Connected, sensor2Connected);
+        this.updateRedundancyStatus(sensor1Connected, sensor2Connected);
         this.updateLastUpdateTime();
         
-        // Store temperature data in system state
+        // Store dual temperature data in system state
         systemState.temperature = {
+            sensor1_temp: sensor1Temp,
+            sensor2_temp: sensor2Temp,
             current: currentTemp,
             alarm: tempAlarm,
             buzzer_active: buzzerActive,
             max_reached: maxTemp,
+            max_sensor1: maxSensor1,
+            max_sensor2: maxSensor2,
             last_update: new Date(),
             emergency_active: emergencyActive,
             alarm_count: alarmCount,
-            update_frequency: updateFrequency
+            update_frequency: updateFrequency,
+            sensor1_connected: sensor1Connected,
+            sensor2_connected: sensor2Connected,
+            sensor_failure_count: tempData.sensor_failure_count || 0,
+            temperature_difference: tempDifference,
+            dual_sensor_mode: true
         };
         
         // Handle notifications
-        this.handleTemperatureNotifications(tempAlarm, emergencyActive, currentTemp);
+        this.handleDualTemperatureNotifications(tempAlarm, emergencyActive, currentTemp, tempDifference, sensor1Connected, sensor2Connected);
     }
     
-    static updateTemperatureElements(currentTemp, tempAlarm, emergencyActive) {
-        // Main temperature reading - OPTIMIZED DOM access
-        const tempCurrentEl = document.getElementById('temp-current');
-        if (tempCurrentEl && tempCurrentEl.textContent !== `${currentTemp.toFixed(1)}°C`) {
-            tempCurrentEl.textContent = `${currentTemp.toFixed(1)}°C`;
-            tempCurrentEl.className = 'temp-current';
+    static updateDualSensorElements(sensor1Temp, sensor2Temp, safetyTemp, sensor1Connected, sensor2Connected) {
+        // Update individual sensor temperatures
+        const sensor1El = document.getElementById('sensor1-temp');
+        const sensor2El = document.getElementById('sensor2-temp');
+        const safetyTempEl = document.getElementById('safety-temp');
+        
+        if (sensor1El) {
+            sensor1El.textContent = `${sensor1Temp.toFixed(1)}°C`;
+            sensor1El.className = 'temp-current primary';
             
-            if (tempAlarm || currentTemp >= CONFIG.TEMP_ALARM_THRESHOLD) {
-                tempCurrentEl.classList.add('danger');
-            } else if (currentTemp >= CONFIG.TEMP_WARNING_THRESHOLD) {
-                tempCurrentEl.classList.add('warning');
+            // Color coding based on temperature and connection
+            if (!sensor1Connected) {
+                sensor1El.classList.add('disconnected');
+            } else if (sensor1Temp >= CONFIG.TEMP_ALARM_THRESHOLD) {
+                sensor1El.classList.add('danger');
+            } else if (sensor1Temp >= CONFIG.TEMP_WARNING_THRESHOLD) {
+                sensor1El.classList.add('warning');
             }
+        }
+        
+        if (sensor2El) {
+            sensor2El.textContent = `${sensor2Temp.toFixed(1)}°C`;
+            sensor2El.className = 'temp-current secondary';
+            
+            if (!sensor2Connected) {
+                sensor2El.classList.add('disconnected');
+            } else if (sensor2Temp >= CONFIG.TEMP_ALARM_THRESHOLD) {
+                sensor2El.classList.add('danger');
+            } else if (sensor2Temp >= CONFIG.TEMP_WARNING_THRESHOLD) {
+                sensor2El.classList.add('warning');
+            }
+        }
+        
+        // Update safety temperature (maximum)
+        if (safetyTempEl) {
+            safetyTempEl.textContent = `${safetyTemp.toFixed(1)}°C`;
+            safetyTempEl.className = 'temp-current safety';
+            
+            if (safetyTemp >= CONFIG.TEMP_ALARM_THRESHOLD) {
+                safetyTempEl.classList.add('danger');
+            } else if (safetyTemp >= CONFIG.TEMP_WARNING_THRESHOLD) {
+                safetyTempEl.classList.add('warning');
+            }
+        }
+        
+        // Update individual sensor max temperatures
+        const sensor1MaxEl = document.getElementById('sensor1-max');
+        const sensor2MaxEl = document.getElementById('sensor2-max');
+        
+        if (sensor1MaxEl) {
+            sensor1MaxEl.textContent = `${systemState.temperature.max_sensor1.toFixed(1)}°C`;
+        }
+        if (sensor2MaxEl) {
+            sensor2MaxEl.textContent = `${systemState.temperature.max_sensor2.toFixed(1)}°C`;
         }
         
         // Temperature section styling
         const tempSectionEl = document.getElementById('temperature-section');
         if (tempSectionEl) {
             tempSectionEl.className = 'temperature-section';
-            if (tempAlarm || emergencyActive) {
+            if (systemState.temperature.alarm || systemState.temperature.emergency_active) {
                 tempSectionEl.classList.add('danger');
-            } else if (currentTemp >= CONFIG.TEMP_WARNING_THRESHOLD) {
+            } else if (safetyTemp >= CONFIG.TEMP_WARNING_THRESHOLD) {
                 tempSectionEl.classList.add('warning');
             }
         }
     }
     
-    static updateTemperatureDetails(maxTemp, alarmCount, buzzerActive, updateFrequency) {
+    static updateTemperatureDetails(maxTemp, maxSensor1, maxSensor2, alarmCount, buzzerActive, updateFrequency, tempDifference) {
         // Batch DOM updates for better performance
         const updates = {
-            'temp-max': `${maxTemp.toFixed(1)}°C`,
             'temp-alarm-count': alarmCount,
             'buzzer-status': buzzerActive ? 'Aktif' : 'Pasif',
-            'detailed-temp-max': `${maxTemp.toFixed(1)}°C`,
-            'detailed-alarm-count': alarmCount,
-            'system-temperature': `${systemState.temperature.current.toFixed(0)}°C`,
-            'temp-update-frequency': updateFrequency ? `${updateFrequency.toFixed(1)} Hz` : '0 Hz'  // NEW
+            'temp-frequency': updateFrequency ? `${updateFrequency.toFixed(1)}` : '0.0',
+            'detailed-sensor1-temp': `${systemState.temperature.sensor1_temp.toFixed(1)}°C`,
+            'detailed-sensor2-temp': `${systemState.temperature.sensor2_temp.toFixed(1)}°C`,
+            'detailed-sensor1-max': `${maxSensor1.toFixed(1)}°C`,
+            'detailed-sensor2-max': `${maxSensor2.toFixed(1)}°C`,
+            'detailed-safety-temp': `${systemState.temperature.current.toFixed(1)}°C`,
+            'detailed-temp-diff': `${tempDifference.toFixed(1)}°C`,
+            'temp-update-frequency': updateFrequency ? `${updateFrequency.toFixed(1)} Hz` : '0 Hz',
+            'temp-difference-value': `${tempDifference.toFixed(1)}°C`
         };
         
         Object.entries(updates).forEach(([id, value]) => {
@@ -203,11 +289,89 @@ class TemperatureManager {
         if (buzzerBtn) {
             buzzerBtn.disabled = !buzzerActive;
         }
+        
+        // Show/hide temperature difference warning
+        const tempDiffWarning = document.getElementById('temp-difference-warning');
+        if (tempDiffWarning) {
+            const shouldShow = tempDifference > CONFIG.TEMP_DIFF_WARNING_THRESHOLD && 
+                              systemState.temperature.sensor1_connected && 
+                              systemState.temperature.sensor2_connected;
+            
+            const currentDisplay = tempDiffWarning.style.display;
+            const targetDisplay = shouldShow ? 'block' : 'none';
+            
+            if (currentDisplay !== targetDisplay) {
+                tempDiffWarning.style.display = targetDisplay;
+            }
+        }
+    }
+    
+    static updateSensorConnectionStatus(sensor1Connected, sensor2Connected) {
+        // Update sensor 1 connection status
+        const sensor1Dot = document.getElementById('sensor1-dot');
+        const sensor1StatusText = document.getElementById('sensor1-status-text');
+        const sensor1StatusMini = document.getElementById('sensor1-status-mini');
+        
+        if (sensor1Dot) {
+            sensor1Dot.className = sensor1Connected ? 'connection-dot connected' : 'connection-dot';
+        }
+        if (sensor1StatusText) {
+            sensor1StatusText.textContent = sensor1Connected ? 'Bağlı' : 'Bağlantısız';
+        }
+        if (sensor1StatusMini) {
+            sensor1StatusMini.textContent = '●';
+            sensor1StatusMini.style.color = sensor1Connected ? '#00ff88' : '#ff4757';
+        }
+        
+        // Update sensor 2 connection status
+        const sensor2Dot = document.getElementById('sensor2-dot');
+        const sensor2StatusText = document.getElementById('sensor2-status-text');
+        const sensor2StatusMini = document.getElementById('sensor2-status-mini');
+        
+        if (sensor2Dot) {
+            sensor2Dot.className = sensor2Connected ? 'connection-dot connected' : 'connection-dot';
+        }
+        if (sensor2StatusText) {
+            sensor2StatusText.textContent = sensor2Connected ? 'Bağlı' : 'Bağlantısız';
+        }
+        if (sensor2StatusMini) {
+            sensor2StatusMini.textContent = '●';
+            sensor2StatusMini.style.color = sensor2Connected ? '#00ff88' : '#ff4757';
+        }
+    }
+    
+    static updateRedundancyStatus(sensor1Connected, sensor2Connected) {
+        let redundancyStatus, redundancyColor;
+        
+        if (sensor1Connected && sensor2Connected) {
+            redundancyStatus = 'Çift Aktif';
+            redundancyColor = '#00ff88';
+        } else if (sensor1Connected || sensor2Connected) {
+            redundancyStatus = 'Tek Aktif';
+            redundancyColor = '#ffc107';
+        } else {
+            redundancyStatus = 'Sensör Yok';
+            redundancyColor = '#ff4757';
+        }
+        
+        const redundancyElements = [
+            'sensor-redundancy-status',
+            'detailed-redundancy-status',
+            'modal-redundancy'
+        ];
+        
+        redundancyElements.forEach(id => {
+            const element = document.getElementById(id);
+            if (element) {
+                element.textContent = redundancyStatus;
+                element.style.color = redundancyColor;
+            }
+        });
     }
     
     static updateTemperatureStatus(currentTemp, tempAlarm, emergencyActive) {
         const tempStatusEl = document.getElementById('temp-status-text');
-        const detailedStatusEl = document.getElementById('detailed-temp-status');
+        const detailedAlarmStatusEl = document.getElementById('detailed-temp-alarm-status');
         
         let statusText, statusColor;
         
@@ -226,11 +390,12 @@ class TemperatureManager {
             tempStatusEl.textContent = statusText;
         }
         
-        if (detailedStatusEl) {
-            if (detailedStatusEl.textContent !== statusText) {
-                detailedStatusEl.textContent = statusText;
+        if (detailedAlarmStatusEl) {
+            const alarmStatus = tempAlarm ? 'ALARM' : 'Normal';
+            if (detailedAlarmStatusEl.textContent !== alarmStatus) {
+                detailedAlarmStatusEl.textContent = alarmStatus;
+                detailedAlarmStatusEl.style.color = tempAlarm ? '#ff4757' : '#00ff88';
             }
-            detailedStatusEl.style.color = statusColor;
         }
         
         // Emergency indicators
@@ -245,6 +410,7 @@ class TemperatureManager {
             }
         }
         
+        // Enhanced dual temperature emergency warning
         const emergencyWarning = document.getElementById('temperature-emergency-warning');
         if (emergencyWarning) {
             const shouldShow = tempAlarm || emergencyActive;
@@ -255,10 +421,14 @@ class TemperatureManager {
                 emergencyWarning.style.display = targetDisplay;
                 
                 if (shouldShow) {
-                    const warningTempValue = document.getElementById('warning-temp-value');
-                    if (warningTempValue) {
-                        warningTempValue.textContent = `${currentTemp.toFixed(1)}°C`;
-                    }
+                    // Update dual sensor emergency values
+                    const temp1ValueEl = document.getElementById('warning-temp1-value');
+                    const temp2ValueEl = document.getElementById('warning-temp2-value');
+                    const tempMaxValueEl = document.getElementById('warning-temp-max-value');
+                    
+                    if (temp1ValueEl) temp1ValueEl.textContent = `${systemState.temperature.sensor1_temp.toFixed(1)}°C`;
+                    if (temp2ValueEl) temp2ValueEl.textContent = `${systemState.temperature.sensor2_temp.toFixed(1)}°C`;
+                    if (tempMaxValueEl) tempMaxValueEl.textContent = `${currentTemp.toFixed(1)}°C`;
                 }
             }
         }
@@ -271,18 +441,18 @@ class TemperatureManager {
         }
     }
     
-    static handleTemperatureNotifications(tempAlarm, emergencyActive, currentTemp) {
-        // Temperature alarm notifications - same logic
+    static handleDualTemperatureNotifications(tempAlarm, emergencyActive, currentTemp, tempDifference, sensor1Connected, sensor2Connected) {
+        // Temperature alarm notifications
         if ((tempAlarm || emergencyActive) && !appState.lastTempAlarmNotified) {
             NotificationManager.show(
-                `SICAKLIK ALARMI! ${currentTemp.toFixed(1)}°C - Sistem durduruldu!`, 
+                `ÇIFT SENSÖR SICAKLIK ALARMI! Max: ${currentTemp.toFixed(1)}°C - Sistem durduruldu!`, 
                 'error', 
                 8000
             );
             appState.lastTempAlarmNotified = true;
         } else if (!(tempAlarm || emergencyActive) && appState.lastTempAlarmNotified) {
             NotificationManager.show(
-                `Sıcaklık güvenli seviyeye döndü: ${currentTemp.toFixed(1)}°C`, 
+                `Sıcaklık güvenli seviyeye döndü: S1:${systemState.temperature.sensor1_temp.toFixed(1)}°C S2:${systemState.temperature.sensor2_temp.toFixed(1)}°C`, 
                 'success'
             );
             appState.lastTempAlarmNotified = false;
@@ -292,13 +462,40 @@ class TemperatureManager {
         if (currentTemp >= CONFIG.TEMP_WARNING_THRESHOLD && currentTemp < CONFIG.TEMP_ALARM_THRESHOLD) {
             if (!appState.tempWarningShown) {
                 NotificationManager.show(
-                    `Sıcaklık uyarı seviyesinde: ${currentTemp.toFixed(1)}°C`, 
+                    `Sıcaklık uyarı seviyesinde: Max ${currentTemp.toFixed(1)}°C (S1:${systemState.temperature.sensor1_temp.toFixed(1)}°C S2:${systemState.temperature.sensor2_temp.toFixed(1)}°C)`, 
                     'warning'
                 );
                 appState.tempWarningShown = true;
             }
         } else {
             appState.tempWarningShown = false;
+        }
+        
+        // Sensor difference warnings
+        if (tempDifference > CONFIG.TEMP_DIFF_WARNING_THRESHOLD && sensor1Connected && sensor2Connected) {
+            if (!appState.sensorDifferenceWarningShown) {
+                NotificationManager.show(
+                    `Büyük sensör farkı! S1:${systemState.temperature.sensor1_temp.toFixed(1)}°C S2:${systemState.temperature.sensor2_temp.toFixed(1)}°C (Fark: ${tempDifference.toFixed(1)}°C)`, 
+                    'warning',
+                    6000
+                );
+                appState.sensorDifferenceWarningShown = true;
+            }
+        } else {
+            appState.sensorDifferenceWarningShown = false;
+        }
+        
+        // Sensor disconnection warnings
+        if (!sensor1Connected && systemState.temperature.sensor1_connected) {
+            NotificationManager.show('Sensör 1 (Pin 8) bağlantısı kesildi!', 'warning');
+        }
+        if (!sensor2Connected && systemState.temperature.sensor2_connected) {
+            NotificationManager.show('Sensör 2 (Pin 13) bağlantısı kesildi!', 'warning');
+        }
+        
+        // Both sensors failed warning
+        if (!sensor1Connected && !sensor2Connected && (systemState.temperature.sensor1_connected || systemState.temperature.sensor2_connected)) {
+            NotificationManager.show('KRITIK: Her iki sıcaklık sensörü de bağlantısız!', 'error', 10000);
         }
     }
     
@@ -315,6 +512,12 @@ class TemperatureManager {
                 systemState.temperature.buzzer_active = false;
                 NotificationManager.show('Buzzer kapatıldı', 'success');
                 CommandLogger.log('Buzzer kapatıldı', true);
+                
+                // Log dual temperatures when buzzer turned off
+                if (data.dual_temps) {
+                    CommandLogger.log('Buzzer kapatıldığında sıcaklıklar', true, 
+                        `S1:${data.dual_temps.sensor1}°C S2:${data.dual_temps.sensor2}°C Max:${data.dual_temps.max}°C`);
+                }
             } else {
                 throw new Error(data.message || 'Buzzer kapatılamadı');
             }
@@ -324,28 +527,36 @@ class TemperatureManager {
         }
     }
     
-    // NEW: Ultra-fast temperature-only updates
-    static async updateTemperatureOnly() {
+    // NEW: Ultra-fast dual temperature updates
+    static async updateDualTemperatureOnly() {
         try {
             const response = await RequestHandler.makeRequest(`${BACKEND_URL}/api/temperature/realtime`, {
                 method: 'GET'
-            }, 2000, 1); // Short timeout, single attempt
+            }, 2000, 1);
             
             const data = await response.json();
             
-            if (data.temperature !== undefined) {
-                // Quick temperature data structure
-                const quickTempData = {
+            if (data.dual_sensor_mode && data.sensor1_temp !== undefined && data.sensor2_temp !== undefined) {
+                // Ultra-fast dual temperature data structure
+                const quickDualTempData = {
+                    sensor1_temp: data.sensor1_temp,
+                    sensor2_temp: data.sensor2_temp,
                     current: data.temperature,
                     alarm: data.alarm,
                     buzzer_active: data.buzzer,
                     update_frequency: data.frequency_hz,
-                    max_reached: systemState.temperature.max_reached, // Keep existing max
+                    sensor1_connected: data.sensor1_connected,
+                    sensor2_connected: data.sensor2_connected,
+                    // Keep existing values
+                    max_reached: systemState.temperature.max_reached,
+                    max_sensor1: Math.max(systemState.temperature.max_sensor1, data.sensor1_temp),
+                    max_sensor2: Math.max(systemState.temperature.max_sensor2, data.sensor2_temp),
                     emergency_active: data.alarm,
-                    alarm_count: systemState.temperature.alarm_count // Keep existing count
+                    alarm_count: systemState.temperature.alarm_count,
+                    sensor_failure_count: systemState.temperature.sensor_failure_count
                 };
                 
-                this.updateTemperatureDisplay(quickTempData);
+                this.updateDualTemperatureDisplay(quickDualTempData);
                 
                 // Update connection status
                 ConnectionManager.updateConnectionStatus('backend', true);
@@ -353,7 +564,7 @@ class TemperatureManager {
             }
             
         } catch (error) {
-            console.debug('Quick temperature update failed:', error.message);
+            console.debug('Quick dual temperature update failed:', error.message);
             appState.consecutiveErrors++;
             
             if (appState.consecutiveErrors >= 3) {
@@ -363,7 +574,7 @@ class TemperatureManager {
     }
 }
 
-// HTTP Request Handler - OPTIMIZED (keeping existing but with reduced timeouts)
+// HTTP Request Handler - SAME (optimized)
 class RequestHandler {
     static async makeRequest(url, options = {}, timeout = CONFIG.CONNECTION_TIMEOUT, retries = CONFIG.MAX_RETRIES) {
         const controller = new AbortController();
@@ -411,7 +622,7 @@ class RequestHandler {
                     throw error;
                 }
                 
-                await new Promise(resolve => setTimeout(resolve, 500 * (attempt + 1))); // Reduced retry delay
+                await new Promise(resolve => setTimeout(resolve, 400 * (attempt + 1)));
             }
         }
     }
@@ -427,13 +638,13 @@ class RequestHandler {
     }
 }
 
-// Status Manager - OPTIMIZED with separate temperature polling
+// Status Manager - DUAL TEMPERATURE ENHANCED
 class StatusManager {
     static async pollStatus() {
         try {
             const response = await RequestHandler.makeRequest(`${BACKEND_URL}/api/status`, {
                 method: 'GET'
-            }, 3000, 1); // Reduced timeout and retries for faster polling
+            }, 3000, 1);
 
             if (response.ok) {
                 const data = await response.json();
@@ -443,12 +654,12 @@ class StatusManager {
                 systemState.relayBrakeActive = data.relay_brake_active;
                 systemState.connected = data.connected;
                 
-                // Temperature data handling
+                // Dual temperature data handling
                 if (data.temperature) {
-                    TemperatureManager.updateTemperatureDisplay(data.temperature);
+                    DualTemperatureManager.updateDualTemperatureDisplay(data.temperature);
                 }
                 
-                // Motor states
+                // Motor states - SAME
                 Object.keys(data.motors || {}).forEach(motorNum => {
                     const running = data.motors[motorNum];
                     const speed = (data.individual_speeds && data.individual_speeds[motorNum]) || 0;
@@ -485,7 +696,7 @@ class StatusManager {
 
         } catch (error) {
             appState.consecutiveErrors++;
-            if (appState.consecutiveErrors >= 2) { // Reduced threshold
+            if (appState.consecutiveErrors >= 2) {
                 ConnectionManager.updateConnectionStatus('backend', false);
                 ConnectionManager.updateConnectionStatus('arduino', false);
             }
@@ -501,20 +712,28 @@ class StatusManager {
         if (appState.temperatureUpdateInterval) {
             clearInterval(appState.temperatureUpdateInterval);
         }
+        if (appState.realtimeTemperatureInterval) {
+            clearInterval(appState.realtimeTemperatureInterval);
+        }
         
-        // Start general status polling (less frequent)
+        // Start general status polling
         appState.statusUpdateInterval = setInterval(() => {
             this.pollStatus();
         }, CONFIG.STATUS_UPDATE_INTERVAL);
         
-        // Start separate ultra-fast temperature polling (more frequent)
+        // Start dual temperature polling
         appState.temperatureUpdateInterval = setInterval(() => {
-            TemperatureManager.updateTemperatureOnly();
+            DualTemperatureManager.updateDualTemperatureOnly();
         }, CONFIG.TEMPERATURE_UPDATE_INTERVAL);
+        
+        // Start ultra-fast realtime temperature polling
+        appState.realtimeTemperatureInterval = setInterval(() => {
+            DualTemperatureManager.updateDualTemperatureOnly();
+        }, CONFIG.REALTIME_TEMP_INTERVAL);
         
         // Initial calls
         setTimeout(() => this.pollStatus(), 500);
-        setTimeout(() => TemperatureManager.updateTemperatureOnly(), 100);
+        setTimeout(() => DualTemperatureManager.updateDualTemperatureOnly(), 100);
     }
 
     static stopStatusPolling() {
@@ -526,10 +745,14 @@ class StatusManager {
             clearInterval(appState.temperatureUpdateInterval);
             appState.temperatureUpdateInterval = null;
         }
+        if (appState.realtimeTemperatureInterval) {
+            clearInterval(appState.realtimeTemperatureInterval);
+            appState.realtimeTemperatureInterval = null;
+        }
     }
 }
 
-// Keep all other existing classes (CommandLogger, NotificationManager, etc.) - SAME
+// Command Logger - SAME
 class CommandLogger {
     static log(command, success = true, details = '') {
         const timestamp = Utils.formatTime(new Date());
@@ -606,7 +829,7 @@ class NotificationManager {
     }
 }
 
-// Connection Manager - OPTIMIZED
+// Connection Manager - ENHANCED for dual temperature
 class ConnectionManager {
     static updateConnectionStatus(type, connected) {
         systemState.connectionStatus[type] = connected;
@@ -645,14 +868,20 @@ class ConnectionManager {
 
     static async testConnection() {
         try {
-            NotificationManager.show('Bağlantı test ediliyor...', 'info');
+            NotificationManager.show('Dual sensör bağlantı test ediliyor...', 'info');
             
             const response = await RequestHandler.makeRequest(`${BACKEND_URL}/api/ping`);
             const data = await response.json();
             
             if (data.status === 'ok') {
-                CommandLogger.log('Bağlantı testi başarılı', true);
-                NotificationManager.show(`Bağlantı testi başarılı! Temp: ${data.temperature?.current || 'N/A'}°C`, 'success');
+                CommandLogger.log('Dual sensör bağlantı testi başarılı', true);
+                
+                let tempInfo = 'N/A';
+                if (data.dual_temperatures) {
+                    tempInfo = `S1:${data.dual_temperatures.sensor1_temp}°C S2:${data.dual_temperatures.sensor2_temp}°C Max:${data.dual_temperatures.max_temp}°C`;
+                }
+                
+                NotificationManager.show(`Dual sensör bağlantı testi başarılı! ${tempInfo}`, 'success');
                 this.updateConnectionStatus('backend', true);
                 this.updateConnectionStatus('arduino', data.arduino_connected);
             } else {
@@ -660,7 +889,7 @@ class ConnectionManager {
             }
             
         } catch (error) {
-            CommandLogger.log('Bağlantı testi', false, error.message);
+            CommandLogger.log('Dual sensör bağlantı testi', false, error.message);
             NotificationManager.show(`Bağlantı testi başarısız: ${error.message}`, 'error');
             this.updateConnectionStatus('backend', false);
             this.updateConnectionStatus('arduino', false);
@@ -669,7 +898,7 @@ class ConnectionManager {
 
     static async reconnectArduino() {
         try {
-            NotificationManager.show('Arduino yeniden bağlanıyor...', 'info');
+            NotificationManager.show('Arduino dual sensör sistemi yeniden bağlanıyor...', 'info');
             
             const response = await RequestHandler.makeRequest(`${BACKEND_URL}/api/reconnect`, {
                 method: 'POST'
@@ -678,28 +907,25 @@ class ConnectionManager {
             const data = await response.json();
             
             if (data.status === 'success') {
-                CommandLogger.log('Arduino yeniden bağlandı', true);
-                NotificationManager.show('Arduino yeniden bağlandı!', 'success');
+                CommandLogger.log('Arduino dual sensör sistemi yeniden bağlandı', true);
+                NotificationManager.show('Arduino dual sensör sistemi yeniden bağlandı!', 'success');
                 setTimeout(() => StatusManager.pollStatus(), 1000);
             } else {
                 throw new Error(data.message || 'Reconnection failed');
             }
             
         } catch (error) {
-            CommandLogger.log('Arduino yeniden bağlanma', false, error.message);
+            CommandLogger.log('Arduino dual sensör yeniden bağlanma', false, error.message);
             NotificationManager.show(`Arduino yeniden bağlanamadı: ${error.message}`, 'error');
         }
     }
 }
 
-// Keep all existing Motor, Group, System, and UI Manager classes - SAME
-// (Adding minimal changes for optimization)
-
-// Motor Control - SAME but with optimized error handling
+// Motor Control - ENHANCED with dual temperature checks
 class MotorController {
     static async startMotor(motorNum) {
         if (systemState.temperature.alarm || systemState.temperature.emergency_active) {
-            NotificationManager.show('Sıcaklık alarmı nedeniyle motorlar başlatılamaz!', 'warning');
+            NotificationManager.show(`Sıcaklık alarmı nedeniyle motorlar başlatılamaz! S1:${systemState.temperature.sensor1_temp.toFixed(1)}°C S2:${systemState.temperature.sensor2_temp.toFixed(1)}°C`, 'warning');
             return;
         }
         
@@ -728,11 +954,12 @@ class MotorController {
                     systemState.individualMotorSpeeds[motorNum] = speed;
                     UIManager.updateMotorStatus(motorNum, true, speed);
                     UIManager.updateMotorCount();
-                    CommandLogger.log(`Motor ${motorNum} başlatıldı`, true, `${speed}% - Temp: ${systemState.temperature.current.toFixed(1)}°C`);
+                    CommandLogger.log(`Motor ${motorNum} başlatıldı`, true, 
+                        `${speed}% - S1:${systemState.temperature.sensor1_temp.toFixed(1)}°C S2:${systemState.temperature.sensor2_temp.toFixed(1)}°C`);
                     NotificationManager.show(`Motor ${motorNum} başlatıldı!`, 'success');
                     
-                    // Quick temperature check after motor start
-                    setTimeout(() => TemperatureManager.updateTemperatureOnly(), 200);
+                    // Quick dual temperature check after motor start
+                    setTimeout(() => DualTemperatureManager.updateDualTemperatureOnly(), 200);
                 }
 
             } catch (error) {
@@ -769,7 +996,7 @@ class MotorController {
 
     static async setMotorSpeed(motorNum, speed) {
         if (systemState.temperature.alarm || systemState.temperature.emergency_active) {
-            NotificationManager.show('Sıcaklık alarmı nedeniyle motor kontrol edilemez!', 'warning');
+            NotificationManager.show(`Sıcaklık alarmı nedeniyle motor kontrol edilemez! S1:${systemState.temperature.sensor1_temp.toFixed(1)}°C S2:${systemState.temperature.sensor2_temp.toFixed(1)}°C`, 'warning');
             return;
         }
         
@@ -811,11 +1038,11 @@ class MotorController {
     }
 }
 
-// Group Controller - SAME (keeping existing functionality)
+// Group Controller - ENHANCED with dual temperature logging
 class GroupController {
     static async startGroup(groupType) {
         if (systemState.temperature.alarm || systemState.temperature.emergency_active) {
-            NotificationManager.show('Sıcaklık alarmı nedeniyle motor grubu başlatılamaz!', 'warning');
+            NotificationManager.show(`Sıcaklık alarmı nedeniyle motor grubu başlatılamaz! S1:${systemState.temperature.sensor1_temp.toFixed(1)}°C S2:${systemState.temperature.sensor2_temp.toFixed(1)}°C`, 'warning');
             return;
         }
         
@@ -854,11 +1081,12 @@ class GroupController {
                     UIManager.updateMotorCount();
                     
                     const groupName = groupType === 'levitation' ? 'Levitasyon' : 'İtki';
-                    CommandLogger.log(`${groupName} grubu başlatıldı`, true, `${speed}% - M${motorRange.join(',')} - Temp: ${systemState.temperature.current.toFixed(1)}°C`);
+                    CommandLogger.log(`${groupName} grubu başlatıldı`, true, 
+                        `${speed}% - M${motorRange.join(',')} - S1:${systemState.temperature.sensor1_temp.toFixed(1)}°C S2:${systemState.temperature.sensor2_temp.toFixed(1)}°C`);
                     NotificationManager.show(`${groupName} grubu başlatıldı! (M${motorRange.join(',')})`, 'success');
                     
-                    // Quick temperature check after group start
-                    setTimeout(() => TemperatureManager.updateTemperatureOnly(), 200);
+                    // Quick dual temperature check after group start
+                    setTimeout(() => DualTemperatureManager.updateDualTemperatureOnly(), 200);
                 }
 
             } catch (error) {
@@ -869,6 +1097,7 @@ class GroupController {
         });
     }
 
+    // Keep other GroupController methods same but with dual temp enhancements
     static async stopGroup(groupType) {
         RequestHandler.throttleRequest(async () => {
             try {
@@ -910,7 +1139,7 @@ class GroupController {
         clearTimeout(window[`${groupType}SpeedTimeout`]);
         window[`${groupType}SpeedTimeout`] = setTimeout(() => {
             this.sendGroupSpeed(groupType, speed);
-        }, 200); // Reduced from 300ms
+        }, 200);
     }
 
     static adjustGroupSpeed(groupType, change) {
@@ -955,13 +1184,11 @@ class GroupController {
     }
 }
 
-// Keep all other existing classes (SystemController, UIManager, etc.) - SAME
-
-// System Controller - SAME (keeping existing functionality)
+// System Controller - ENHANCED with dual temperature checks
 class SystemController {
     static async toggleArm() {
         if (!systemState.armed && (systemState.temperature.alarm || systemState.temperature.emergency_active)) {
-            NotificationManager.show('Sıcaklık alarmı nedeniyle sistem hazırlanamaz!', 'warning');
+            NotificationManager.show(`Sıcaklık alarmı nedeniyle sistem hazırlanamaz! S1:${systemState.temperature.sensor1_temp.toFixed(1)}°C S2:${systemState.temperature.sensor2_temp.toFixed(1)}°C`, 'warning');
             return;
         }
         
@@ -1009,11 +1236,12 @@ class SystemController {
                     }
                     
                     const statusText = action === 'arm' ? 'hazırlandı' : 'devre dışı bırakıldı';
-                    CommandLogger.log(`Sistem ${statusText}`, true, `Temp: ${systemState.temperature.current.toFixed(1)}°C`);
+                    CommandLogger.log(`Sistem ${statusText}`, true, 
+                        `S1:${systemState.temperature.sensor1_temp.toFixed(1)}°C S2:${systemState.temperature.sensor2_temp.toFixed(1)}°C`);
                     NotificationManager.show(`Sistem ${statusText}!`, 'success');
                     
-                    // Quick temperature check after system change
-                    setTimeout(() => TemperatureManager.updateTemperatureOnly(), 200);
+                    // Quick dual temperature check after system change
+                    setTimeout(() => DualTemperatureManager.updateDualTemperatureOnly(), 200);
                 }
 
             } catch (error) {
@@ -1026,7 +1254,7 @@ class SystemController {
 
     static async controlRelayBrake(action) {
         if (action === 'on' && (systemState.temperature.alarm || systemState.temperature.emergency_active)) {
-            NotificationManager.show('Sıcaklık alarmı nedeniyle röle aktif yapılamaz!', 'warning');
+            NotificationManager.show(`Sıcaklık alarmı nedeniyle röle aktif yapılamaz! S1:${systemState.temperature.sensor1_temp.toFixed(1)}°C S2:${systemState.temperature.sensor2_temp.toFixed(1)}°C`, 'warning');
             return;
         }
         
@@ -1056,7 +1284,8 @@ class SystemController {
                     }
                     
                     const status = systemState.relayBrakeActive ? 'aktif' : 'pasif';
-                    CommandLogger.log(`Röle ${status}`, true, `Temp: ${systemState.temperature.current.toFixed(1)}°C`);
+                    CommandLogger.log(`Röle ${status}`, true, 
+                        `S1:${systemState.temperature.sensor1_temp.toFixed(1)}°C S2:${systemState.temperature.sensor2_temp.toFixed(1)}°C`);
                     NotificationManager.show(`Röle sistem ${status}!`, systemState.relayBrakeActive ? 'success' : 'warning');
                 }
 
@@ -1116,7 +1345,8 @@ class SystemController {
                 method: 'POST'
             });
 
-            CommandLogger.log('ACİL DURDURMA AKTİF', true, `Tüm sistemler durduruldu - Temp: ${systemState.temperature.current.toFixed(1)}°C`);
+            CommandLogger.log('ACİL DURDURMA AKTİF', true, 
+                `Tüm sistemler durduruldu - S1:${systemState.temperature.sensor1_temp.toFixed(1)}°C S2:${systemState.temperature.sensor2_temp.toFixed(1)}°C`);
             NotificationManager.show('ACİL DURDURMA! Tüm sistemler durduruldu!', 'error', 6000);
 
         } catch (error) {
@@ -1127,7 +1357,7 @@ class SystemController {
     }
 }
 
-// UI Manager - OPTIMIZED (minimal changes for performance)
+// UI Manager - ENHANCED for dual temperature
 class UIManager {
     static updateMotorStatus(motorNum, running, speed) {
         const statusElement = document.getElementById(`motor${motorNum}-status`);
@@ -1319,7 +1549,43 @@ class UIManager {
     }
 }
 
-// Global Functions - SAME
+// NEW: Dual Temperature Modal Functions
+function showSensorDetails() {
+    const modal = document.getElementById('sensor-detail-modal');
+    if (modal) {
+        // Update modal content with current dual sensor data
+        const modalUpdates = {
+            'modal-sensor1-temp': `${systemState.temperature.sensor1_temp.toFixed(1)}°C`,
+            'modal-sensor2-temp': `${systemState.temperature.sensor2_temp.toFixed(1)}°C`,
+            'modal-sensor1-max': `${systemState.temperature.max_sensor1.toFixed(1)}°C`,
+            'modal-sensor2-max': `${systemState.temperature.max_sensor2.toFixed(1)}°C`,
+            'modal-sensor1-connection': systemState.temperature.sensor1_connected ? 'Bağlı' : 'Bağlantısız',
+            'modal-sensor2-connection': systemState.temperature.sensor2_connected ? 'Bağlı' : 'Bağlantısız',
+            'modal-safety-temp': `${systemState.temperature.current.toFixed(1)}°C`,
+            'modal-temp-diff': `${systemState.temperature.temperature_difference.toFixed(1)}°C`,
+            'modal-update-freq': `${systemState.temperature.update_frequency.toFixed(1)} Hz`,
+            'modal-redundancy': systemState.temperature.sensor1_connected && systemState.temperature.sensor2_connected ? 
+                              'Çift Aktif' : (systemState.temperature.sensor1_connected || systemState.temperature.sensor2_connected ? 
+                              'Tek Aktif' : 'Sensör Yok')
+        };
+        
+        Object.entries(modalUpdates).forEach(([id, value]) => {
+            const element = document.getElementById(id);
+            if (element) element.textContent = value;
+        });
+        
+        modal.style.display = 'block';
+    }
+}
+
+function hideSensorDetails() {
+    const modal = document.getElementById('sensor-detail-modal');
+    if (modal) {
+        modal.style.display = 'none';
+    }
+}
+
+// Global Functions - DUAL TEMPERATURE ENHANCED
 window.toggleArm = () => SystemController.toggleArm();
 window.startMotor = (motorNum) => MotorController.startMotor(motorNum);
 window.stopMotor = (motorNum) => MotorController.stopMotor(motorNum);
@@ -1334,17 +1600,19 @@ window.emergencyStop = () => SystemController.emergencyStop();
 window.testConnection = () => ConnectionManager.testConnection();
 window.reconnectArduino = () => ConnectionManager.reconnectArduino();
 window.closeNotification = () => NotificationManager.hide();
-window.turnOffBuzzer = () => TemperatureManager.turnOffBuzzer();
+window.turnOffBuzzer = () => DualTemperatureManager.turnOffBuzzer();
+window.showSensorDetails = showSensorDetails;
+window.hideSensorDetails = hideSensorDetails;
 
-// Application Lifecycle - OPTIMIZED
+// Application Lifecycle - DUAL TEMPERATURE ENHANCED
 class Application {
     static async initialize() {
-        console.log('SpectraLoop Frontend OPTIMIZED v3.4 - Ultra-fast Temperature Updates initializing...');
-        console.log('OPTIMIZATIONS: 500ms temperature polling, 50ms Arduino reading, reduced timeouts');
+        console.log('SpectraLoop Frontend DUAL TEMPERATURE v3.5 - Ultra-fast Dual Sensor Updates initializing...');
+        console.log('DUAL SENSOR FEATURES: 2x DS18B20, 400ms ultra-fast polling, redundant safety');
         
         try {
             UIManager.showLoading(true);
-            UIManager.setLoadingText('Sistem başlatılıyor...');
+            UIManager.setLoadingText('Dual sensör sistem başlatılıyor...');
             
             UIManager.updateArmButton();
             UIManager.updateRelayBrakeStatus();
@@ -1352,45 +1620,45 @@ class Application {
             
             this.setupEventListeners();
             
-            UIManager.setLoadingText('Ultra-fast backend bağlantısı test ediliyor...');
+            UIManager.setLoadingText('Dual sensör backend bağlantısı test ediliyor...');
             
             try {
                 await ConnectionManager.testConnection();
             } catch (error) {
-                console.warn('Initial connection test failed:', error.message);
+                console.warn('Initial dual sensor connection test failed:', error.message);
             }
             
-            UIManager.setLoadingText('Ultra-fast polling başlatılıyor...');
+            UIManager.setLoadingText('Ultra-fast dual sensör polling başlatılıyor...');
             
             StatusManager.startStatusPolling();
             
-            // Start performance monitoring
-            this.startPerformanceMonitoring();
+            // Start enhanced performance monitoring
+            this.startDualSensorPerformanceMonitoring();
             
-            CommandLogger.log('OPTIMIZED Frontend başlatıldı', true, 'Ultra-fast v3.4 + Real-time Temperature');
-            NotificationManager.show('SpectraLoop ULTRA-FAST sistemi hazır! ⚡500ms sıcaklık güncellemeleri aktif⚡', 'success');
+            CommandLogger.log('DUAL SENSOR Frontend başlatıldı', true, 'Ultra-fast v3.5 + Dual DS18B20 Temperature Safety');
+            NotificationManager.show('SpectraLoop DUAL SENSOR sistemi hazır! ⚡400ms çift sensör güncellemeleri aktif⚡', 'success');
             
             UIManager.showLoading(false);
             appState.isInitialized = true;
             
-            console.log('OPTIMIZED Frontend initialization complete with ultra-fast temperature monitoring');
+            console.log('DUAL SENSOR Frontend initialization complete with ultra-fast dual temperature monitoring');
             
         } catch (error) {
-            console.error('Initialization error:', error);
+            console.error('Dual sensor initialization error:', error);
             UIManager.setLoadingText('Başlatma hatası! Yeniden denenecek...');
-            CommandLogger.log('Başlatma hatası', false, error.message);
+            CommandLogger.log('Dual sensör başlatma hatası', false, error.message);
             
             setTimeout(() => {
                 this.initialize();
-            }, 2000); // Reduced retry delay
+            }, 2000);
         }
     }
 
-    static startPerformanceMonitoring() {
-        // Performance statistics logging
+    static startDualSensorPerformanceMonitoring() {
+        // Enhanced performance statistics logging for dual sensors
         setInterval(() => {
             if (appState.performanceStats.averageUpdateFrequency > 0) {
-                console.debug(`Performance: Temperature updates at ${appState.performanceStats.averageUpdateFrequency.toFixed(2)} Hz, Backend frequency: ${systemState.temperature.update_frequency} Hz`);
+                console.debug(`Dual Sensor Performance: Frontend ${appState.performanceStats.averageUpdateFrequency.toFixed(2)} Hz, Backend ${systemState.temperature.update_frequency} Hz, S1 updates: ${appState.performanceStats.sensor1UpdatesCount}, S2 updates: ${appState.performanceStats.sensor2UpdatesCount}`);
             }
         }, CONFIG.PERFORMANCE_LOG_INTERVAL);
     }
@@ -1400,12 +1668,12 @@ class Application {
             if (document.visibilityState === 'visible' && appState.isInitialized) {
                 setTimeout(() => {
                     StatusManager.pollStatus();
-                    TemperatureManager.updateTemperatureOnly();
-                }, 200); // Reduced delay
+                    DualTemperatureManager.updateDualTemperatureOnly();
+                }, 200);
             }
         });
 
-        // Keyboard shortcuts - SAME
+        // Keyboard shortcuts - ENHANCED
         document.addEventListener('keydown', (event) => {
             if (event.ctrlKey) {
                 switch(event.key) {
@@ -1431,9 +1699,28 @@ class Application {
                         break;
                     case 'b':
                         event.preventDefault();
-                        TemperatureManager.turnOffBuzzer();
+                        DualTemperatureManager.turnOffBuzzer();
+                        break;
+                    case 'd': // NEW: Show dual sensor details
+                        event.preventDefault();
+                        showSensorDetails();
                         break;
                 }
+            }
+        });
+
+        // Modal close on ESC key
+        document.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape') {
+                hideSensorDetails();
+            }
+        });
+
+        // Modal close on background click
+        document.addEventListener('click', (event) => {
+            const modal = document.getElementById('sensor-detail-modal');
+            if (event.target === modal) {
+                hideSensorDetails();
             }
         });
 
@@ -1448,15 +1735,15 @@ class Application {
         });
 
         window.addEventListener('online', () => {
-            NotificationManager.show('İnternet bağlantısı yeniden kuruldu', 'success');
+            NotificationManager.show('İnternet bağlantısı yeniden kuruldu - Dual sensör sistemi aktif', 'success');
             setTimeout(() => {
                 StatusManager.pollStatus();
-                TemperatureManager.updateTemperatureOnly();
+                DualTemperatureManager.updateDualTemperatureOnly();
             }, 500);
         });
 
         window.addEventListener('offline', () => {
-            NotificationManager.show('İnternet bağlantısı kesildi', 'warning', 2000);
+            NotificationManager.show('İnternet bağlantısı kesildi - Dual sensör sistemi offline', 'warning', 2000);
             ConnectionManager.updateConnectionStatus('backend', false);
         });
 
@@ -1478,9 +1765,9 @@ class Application {
         
         const handleScreenChange = (e) => {
             if (e.matches) {
-                console.log('Switched to mobile layout');
+                console.log('Switched to mobile layout - Dual sensor optimized');
             } else {
-                console.log('Switched to desktop layout');
+                console.log('Switched to desktop layout - Dual sensor optimized');
             }
         };
 
@@ -1489,7 +1776,7 @@ class Application {
     }
 
     static shutdown() {
-        console.log('Shutting down OPTIMIZED SpectraLoop Frontend...');
+        console.log('Shutting down DUAL TEMPERATURE SpectraLoop Frontend...');
         
         try {
             StatusManager.stopStatusPolling();
@@ -1504,16 +1791,16 @@ class Application {
                 }
             });
             
-            CommandLogger.log('OPTIMIZED Frontend kapatıldı', true, 'Ultra-fast güvenli kapatma');
-            console.log('OPTIMIZED Frontend shutdown complete');
+            CommandLogger.log('DUAL SENSOR Frontend kapatıldı', true, 'Ultra-fast dual sensor güvenli kapatma');
+            console.log('DUAL SENSOR Frontend shutdown complete');
             
         } catch (error) {
-            console.error('Shutdown error:', error);
+            console.error('Dual sensor shutdown error:', error);
         }
     }
 }
 
-// Initialize OPTIMIZED application
+// Initialize DUAL TEMPERATURE application
 document.addEventListener('DOMContentLoaded', () => {
     Application.initialize();
 });
@@ -1522,17 +1809,18 @@ window.addEventListener('beforeunload', () => {
     Application.shutdown();
 });
 
-// Debug mode - ENHANCED
+// Debug mode - DUAL TEMPERATURE ENHANCED
 if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
-    window.spectraDebugOptimized = {
+    window.spectraDebugDualTemp = {
         systemState,
         appState,
         performanceStats: appState.performanceStats,
+        dualTempState: systemState.temperature,
         CONFIG,
         CommandLogger,
         NotificationManager,
         ConnectionManager,
-        TemperatureManager,
+        DualTemperatureManager,
         MotorController,
         GroupController,
         SystemController,
@@ -1541,44 +1829,60 @@ if (window.location.hostname === 'localhost' || window.location.hostname === '12
         Application
     };
     
-    console.log('OPTIMIZED Debug mode enabled. Use window.spectraDebugOptimized to access internals.');
-    console.log('Performance monitoring available in appState.performanceStats');
+    console.log('DUAL TEMPERATURE Debug mode enabled. Use window.spectraDebugDualTemp to access internals.');
+    console.log('Dual sensor performance monitoring available in appState.performanceStats');
+    console.log('Individual sensor stats: sensor1UpdatesCount, sensor2UpdatesCount, dualSensorUpdatesCount');
 }
 
-// Console info - ENHANCED
+// Console info - DUAL TEMPERATURE ENHANCED
 console.log(`
-SpectraLoop Frontend OPTIMIZED v3.4 - Ultra-fast Temperature Updates
+SpectraLoop Frontend DUAL TEMPERATURE v3.5 - Ultra-fast Dual Sensor Updates
 
-🚀 OPTIMIZATION FEATURES:
-   ⚡ 500ms temperature-only polling (2x faster)
-   ⚡ 1000ms general status polling (2x faster) 
-   ⚡ 50ms backend Arduino reading (4x faster)
-   ⚡ Reduced timeouts everywhere
+🌡️ DUAL SENSOR FEATURES:
+   ⚡ Primary DS18B20 sensor (Pin 8)
+   ⚡ Secondary DS18B20 sensor (Pin 13)
+   ⚡ 400ms ultra-fast realtime updates
+   ⚡ 800ms comprehensive dual updates
+   ⚡ Individual sensor health monitoring
+   ⚡ Redundant safety logic (worst-case)
+   ⚡ Temperature difference warnings
+   ⚡ Automatic sensor failover
+   ⚡ Enhanced emergency notifications
+
+🔧 OPTIMIZATION FEATURES:
+   ⚡ 1500ms general status polling
    ⚡ Optimized DOM updates
-   ⚡ Performance monitoring
-   ⚡ Smart request throttling (25ms vs 50ms)
+   ⚡ Dual sensor performance tracking
+   ⚡ Enhanced connection monitoring
+   ⚡ Smart request throttling (25ms)
 
-📊 MONITORING:
-   • Real-time temperature frequency tracking
-   • Frontend/Backend performance correlation
-   • Automatic stale data detection
-   • Connection quality monitoring
+📊 DUAL SENSOR MONITORING:
+   • Individual sensor temperatures
+   • Connection status per sensor
+   • Temperature difference tracking
+   • Dual sensor update frequency
+   • Sensor failure count tracking
+   • Redundancy status monitoring
 
 ⌨️ Keyboard shortcuts:
    Ctrl+Space: Emergency Stop
    Ctrl+A: Arm/Disarm System  
-   Ctrl+T: Test Connection
+   Ctrl+T: Test Dual Sensor Connection
    Ctrl+R: Toggle Relay
    Ctrl+L: Clear Command Log
    Ctrl+B: Turn Off Buzzer
+   Ctrl+D: Show Dual Sensor Details (NEW)
 
-🌡️ TEMPERATURE SAFETY:
-   Sensor: DS18B20 on Pin 8
-   Buzzer: Pin 9 (Alarm notification)
+🌡️ DUAL TEMPERATURE SAFETY:
+   Primary Sensor: DS18B20 on Pin 8
+   Secondary Sensor: DS18B20 on Pin 13
+   Buzzer: Pin 9 (Dual alarm notification)
    Relay Brake: Pin 11 (Safety cutoff)
+   Safety Logic: MAX(Sensor1, Sensor2) for worst-case protection
    Thresholds: Safe <50°C, Warning 50-55°C, Alarm ≥55°C
+   Difference Warning: >5°C between sensors
 
-⚡ NOW WITH SUB-SECOND TEMPERATURE UPDATES! ⚡
+⚡ NOW WITH DUAL SENSOR REDUNDANCY! ⚡
 `);
 
 if (window.location.protocol === 'file:') {
