@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-SpectraLoop Motor Control Backend - Fixed Production v3.2
-Arduino komutları sync olarak gönderiliyor - Motor kontrol sorunu düzeltildi
-Individual + Group motor control + Relay Brake Control
+SpectraLoop Motor Control Backend - Final v3.3 - Temperature Safety System
+Arduino sıcaklık sensörü + buzzer + güvenlik sistemi entegrasyonu
+Individual + Group motor control + Temperature monitoring + Safety features
 Motor Pin Mapping: İtki (3,7), Levitasyon (2,4,5,6)
+Temperature Safety: Pin8->DS18B20, Pin9->Buzzer, Pin11->RelayBrake
 """
 
 from flask import Flask, jsonify, request
@@ -45,6 +46,18 @@ motor_states = {i: False for i in range(1, 7)}
 individual_motor_speeds = {i: 0 for i in range(1, 7)}
 group_speeds = {'levitation': 0, 'thrust': 0}
 
+# Temperature and safety system state
+temperature_data = {
+    'current_temp': 25.0,
+    'temp_alarm': False,
+    'buzzer_active': False,
+    'last_temp_update': datetime.now(),
+    'temp_history': [],
+    'max_temp_reached': 25.0,
+    'alarm_start_time': None,
+    'alarm_count': 0
+}
+
 system_state = {
     'armed': False,
     'brake_active': False,
@@ -53,12 +66,19 @@ system_state = {
     'last_response': None,
     'errors': 0,
     'commands': 0,
-    'uptime': datetime.now()
+    'uptime': datetime.now(),
+    'temperature_emergency': False
 }
 
 # Thread synchronization
 state_lock = threading.Lock()
 shutdown_event = threading.Event()
+
+# Temperature safety constants
+TEMP_ALARM_THRESHOLD = 55.0
+TEMP_SAFE_THRESHOLD = 50.0
+TEMP_WARNING_THRESHOLD = 45.0
+MAX_TEMP_HISTORY = 100
 
 class ProductionArduinoController:
     def __init__(self, port=None, baudrate=115200):
@@ -70,7 +90,7 @@ class ProductionArduinoController:
         self.reconnect_attempts = 0
         self.max_attempts = 5
         
-        # Command processing - async için queue
+        # Command processing
         self.command_queue = queue.Queue(maxsize=100)
         self.response_timeout = 3.0
         
@@ -81,12 +101,17 @@ class ProductionArduinoController:
         self.processor_thread = None
         self.monitor_thread = None
         
+        # Temperature monitoring
+        self.temp_monitor_thread = None
+        self.last_temp_request = 0
+        
         # Initialize connection safely
         try:
             if self.port:
                 self.connect()
                 self._start_command_processor()
                 self._start_connection_monitor()
+                self._start_temperature_monitor()
             else:
                 logger.error("No Arduino port found")
                 system_state['connected'] = False
@@ -207,7 +232,7 @@ class ProductionArduinoController:
                     self.is_connected = True
                     self.reconnect_attempts = 0
                     system_state['connected'] = True
-                    logger.info("Arduino connection successful")
+                    logger.info("Arduino connection successful - Temperature safety system active")
                     return True
                 else:
                     raise Exception("Connection test failed after multiple attempts")
@@ -278,6 +303,100 @@ class ProductionArduinoController:
         self.monitor_thread.start()
         logger.info("Connection monitor started")
     
+    def _start_temperature_monitor(self):
+        """Start background temperature monitor thread"""
+        if self.temp_monitor_thread and self.temp_monitor_thread.is_alive():
+            return
+        
+        self.temp_monitor_thread = threading.Thread(target=self._temperature_monitor, daemon=True, name="TemperatureMonitor")
+        self.temp_monitor_thread.start()
+        logger.info("Temperature monitor started")
+    
+    def _temperature_monitor(self):
+        """Background temperature monitoring with safety checks"""
+        logger.info("Temperature monitor thread started")
+        while not shutdown_event.is_set():
+            try:
+                if self.is_connected:
+                    # Request temperature status every 5 seconds
+                    current_time = time.time()
+                    if current_time - self.last_temp_request > 5.0:
+                        self._request_temperature_status()
+                        self.last_temp_request = current_time
+                
+                shutdown_event.wait(2)
+                
+            except Exception as e:
+                logger.error(f"Temperature monitor error: {e}")
+                shutdown_event.wait(5)
+        
+        logger.info("Temperature monitor thread stopped")
+    
+    def _request_temperature_status(self):
+        """Request temperature status from Arduino"""
+        try:
+            success, response = self.send_command_sync("TEMP_STATUS", timeout=3.0)
+            if success and response:
+                self._parse_temperature_response(response)
+        except Exception as e:
+            logger.debug(f"Temperature request error: {e}")
+    
+    def _parse_temperature_response(self, response):
+        """Parse temperature response from Arduino"""
+        try:
+            lines = response.split('\n')
+            temp_data = {}
+            
+            for line in lines:
+                line = line.strip()
+                if ':' in line:
+                    key, value = line.split(':', 1)
+                    temp_data[key] = value
+            
+            # Update temperature data
+            if 'Temperature' in temp_data:
+                try:
+                    current_temp = float(temp_data['Temperature'])
+                    with state_lock:
+                        temperature_data['current_temp'] = current_temp
+                        temperature_data['last_temp_update'] = datetime.now()
+                        
+                        # Update max temperature
+                        if current_temp > temperature_data['max_temp_reached']:
+                            temperature_data['max_temp_reached'] = current_temp
+                        
+                        # Add to temperature history
+                        temperature_data['temp_history'].append({
+                            'timestamp': datetime.now().isoformat(),
+                            'temperature': current_temp
+                        })
+                        
+                        # Keep only last 100 readings
+                        if len(temperature_data['temp_history']) > MAX_TEMP_HISTORY:
+                            temperature_data['temp_history'] = temperature_data['temp_history'][-MAX_TEMP_HISTORY:]
+                        
+                        # Update alarm status
+                        old_alarm = temperature_data['temp_alarm']
+                        temperature_data['temp_alarm'] = temp_data.get('TempAlarm', '0') == '1'
+                        temperature_data['buzzer_active'] = temp_data.get('BuzzerActive', '0') == '1'
+                        
+                        # Log temperature alarm changes
+                        if temperature_data['temp_alarm'] and not old_alarm:
+                            temperature_data['alarm_start_time'] = datetime.now()
+                            temperature_data['alarm_count'] += 1
+                            system_state['temperature_emergency'] = True
+                            logger.warning(f"TEMPERATURE ALARM! Current: {current_temp}°C - Emergency procedures activated")
+                            
+                        elif not temperature_data['temp_alarm'] and old_alarm:
+                            system_state['temperature_emergency'] = False
+                            logger.info(f"Temperature returned to safe level: {current_temp}°C - Systems can be restarted")
+                
+                except ValueError:
+                    logger.debug("Invalid temperature value received")
+            
+        except Exception as e:
+            logger.debug(f"Temperature parsing error: {e}")
+    
     def _command_processor(self):
         """Background command processor with error handling"""
         logger.info("Command processor thread started")
@@ -328,28 +447,6 @@ class ProductionArduinoController:
         
         logger.info("Connection monitor thread stopped")
     
-    def send_command_async(self, command):
-        """Send command asynchronously via queue - Sadece kritik olmayan komutlar için"""
-        try:
-            if shutdown_event.is_set():
-                return False
-            
-            command_data = {
-                'command': command,
-                'timestamp': time.time(),
-                'attempts': 0
-            }
-            self.command_queue.put(command_data, timeout=0.5)
-            logger.debug(f"Command queued: {command}")
-            return True
-            
-        except queue.Full:
-            logger.warning(f"Command queue full, dropping: {command}")
-            return False
-        except Exception as e:
-            logger.error(f"Async command error: {e}")
-            return False
-    
     def send_command_sync(self, command, timeout=5.0):
         """Send command synchronously with timeout - TÜM MOTOR KOMUTLARI İÇİN"""
         if not self.is_connected or not self.connection or shutdown_event.is_set():
@@ -382,8 +479,10 @@ class ProductionArduinoController:
                             data = self.connection.read(self.connection.in_waiting)
                             response += data.decode('utf-8', errors='ignore')
                             
-                            # Motor komutları için özel kontrol
-                            if any(keyword in response for keyword in ["MOTOR_STARTED", "MOTOR_STOPPED", "LEV_GROUP_STARTED", "THR_GROUP_STARTED", "ARMED", "RELAY_BRAKE:"]):
+                            # Motor komutları ve temperature için özel kontrol
+                            if any(keyword in response for keyword in ["MOTOR_STARTED", "MOTOR_STOPPED", "LEV_GROUP_STARTED", 
+                                                                       "THR_GROUP_STARTED", "ARMED", "RELAY_BRAKE:", 
+                                                                       "Temperature:", "TEMP_ALARM:", "EMERGENCY_STOP"]):
                                 break
                             
                             if '\n' in response or len(response) > 200:
@@ -517,11 +616,14 @@ class ProductionArduinoController:
             
             if self.monitor_thread and self.monitor_thread.is_alive():
                 self.monitor_thread.join(timeout=2.0)
+                
+            if self.temp_monitor_thread and self.temp_monitor_thread.is_alive():
+                self.temp_monitor_thread.join(timeout=2.0)
         
         logger.info("Arduino disconnected successfully")
 
 # Initialize Arduino controller
-logger.info("Initializing Arduino controller...")
+logger.info("Initializing Arduino controller with temperature safety system...")
 try:
     arduino_controller = ProductionArduinoController()
 except Exception as e:
@@ -529,9 +631,10 @@ except Exception as e:
     arduino_controller = None
 
 # API Routes
+
 @app.route('/api/status', methods=['GET'])
 def get_status():
-    """Get comprehensive system status"""
+    """Get comprehensive system status including temperature data"""
     try:
         with state_lock:
             uptime_seconds = (datetime.now() - system_state['uptime']).total_seconds()
@@ -544,6 +647,19 @@ def get_status():
                 'group_speeds': group_speeds.copy(),
                 'brake_active': system_state['brake_active'],
                 'relay_brake_active': system_state['relay_brake_active'],
+                'temperature': {
+                    'current': temperature_data['current_temp'],
+                    'alarm': temperature_data['temp_alarm'],
+                    'buzzer_active': temperature_data['buzzer_active'],
+                    'max_reached': temperature_data['max_temp_reached'],
+                    'last_update': temperature_data['last_temp_update'].isoformat(),
+                    'alarm_threshold': TEMP_ALARM_THRESHOLD,
+                    'safe_threshold': TEMP_SAFE_THRESHOLD,
+                    'warning_threshold': TEMP_WARNING_THRESHOLD,
+                    'emergency_active': system_state['temperature_emergency'],
+                    'alarm_count': temperature_data['alarm_count'],
+                    'history_count': len(temperature_data['temp_history'])
+                },
                 'stats': {
                     'commands': system_state['commands'],
                     'errors': system_state['errors'],
@@ -556,20 +672,107 @@ def get_status():
                     'baudrate': arduino_controller.baudrate if arduino_controller else None
                 },
                 'timestamp': datetime.now().isoformat(),
-                'version': '3.2-fixed-sync'
+                'version': '3.3-temperature-safety'
             })
     except Exception as e:
         logger.error(f"Status endpoint error: {e}")
         return jsonify({'error': str(e), 'connected': False}), 500
 
-@app.route('/api/system/arm', methods=['POST'])
-def arm_system():
-    """Arm the system - relay must be active"""
+@app.route('/api/temperature', methods=['GET'])
+def get_temperature_data():
+    """Get detailed temperature data and history"""
+    try:
+        with state_lock:
+            alarm_duration = None
+            if temperature_data['temp_alarm'] and temperature_data['alarm_start_time']:
+                alarm_duration = (datetime.now() - temperature_data['alarm_start_time']).total_seconds()
+            
+            return jsonify({
+                'current_temperature': temperature_data['current_temp'],
+                'temperature_alarm': temperature_data['temp_alarm'],
+                'buzzer_active': temperature_data['buzzer_active'],
+                'max_temperature_reached': temperature_data['max_temp_reached'],
+                'last_update': temperature_data['last_temp_update'].isoformat(),
+                'thresholds': {
+                    'alarm': TEMP_ALARM_THRESHOLD,
+                    'safe': TEMP_SAFE_THRESHOLD,
+                    'warning': TEMP_WARNING_THRESHOLD
+                },
+                'alarm_info': {
+                    'count': temperature_data['alarm_count'],
+                    'start_time': temperature_data['alarm_start_time'].isoformat() if temperature_data['alarm_start_time'] else None,
+                    'duration_seconds': alarm_duration
+                },
+                'safety_status': {
+                    'emergency_active': system_state['temperature_emergency'],
+                    'can_arm_system': not temperature_data['temp_alarm'] and temperature_data['current_temp'] < TEMP_ALARM_THRESHOLD - 5,
+                    'safe_to_operate': temperature_data['current_temp'] < TEMP_WARNING_THRESHOLD
+                },
+                'history': temperature_data['temp_history'][-20:],  # Son 20 okuma
+                'timestamp': datetime.now().isoformat()
+            })
+    except Exception as e:
+        logger.error(f"Temperature endpoint error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/temperature/buzzer/off', methods=['POST'])
+def turn_off_buzzer():
+    """Manuel buzzer kapatma - sadece alarm yokken"""
     if not arduino_controller or not arduino_controller.is_connected:
         return jsonify({
             'status': 'error',
             'message': 'Arduino not connected'
         }), 503
+    
+    try:
+        success, response = arduino_controller.send_command_sync("BUZZER_OFF", timeout=3.0)
+        
+        if success and "BUZZER_OFF" in response:
+            with state_lock:
+                temperature_data['buzzer_active'] = False
+            
+            logger.info("Buzzer manually turned off")
+            return jsonify({
+                'status': 'success',
+                'message': 'Buzzer turned off',
+                'arduino_response': response
+            })
+        else:
+            return jsonify({
+                'status': 'error',
+                'message': f'Could not turn off buzzer: {response}'
+            }), 500
+            
+    except Exception as e:
+        logger.error(f"Buzzer off error: {e}")
+        return jsonify({
+            'status': 'error',
+            'message': str(e)
+        }), 500
+
+@app.route('/api/system/arm', methods=['POST'])
+def arm_system():
+    """Arm the system - relay must be active and temperature safe"""
+    if not arduino_controller or not arduino_controller.is_connected:
+        return jsonify({
+            'status': 'error',
+            'message': 'Arduino not connected'
+        }), 503
+    
+    # Temperature safety check
+    if temperature_data['temp_alarm']:
+        return jsonify({
+            'status': 'error',
+            'message': 'Cannot arm - temperature alarm active',
+            'current_temp': temperature_data['current_temp']
+        }), 400
+    
+    if temperature_data['current_temp'] > TEMP_ALARM_THRESHOLD - 5:
+        return jsonify({
+            'status': 'error',
+            'message': f'Cannot arm - temperature too high ({temperature_data["current_temp"]}°C)',
+            'max_safe_temp': TEMP_ALARM_THRESHOLD - 5
+        }), 400
     
     if not system_state['relay_brake_active']:
         return jsonify({
@@ -599,15 +802,22 @@ def arm_system():
                 if "ARMED" in line_upper and "ERROR" not in line_upper:
                     with state_lock:
                         system_state['armed'] = True
-                    logger.info("System ARMED successfully")
+                    logger.info(f"System ARMED successfully - Temperature: {temperature_data['current_temp']}°C")
                     return jsonify({
                         'status': 'armed',
                         'message': 'System armed successfully',
+                        'current_temp': temperature_data['current_temp'],
                         'response': line
                     })
                 
                 elif "ERROR:" in line_upper:
-                    if "RELAY_INACTIVE" in line_upper or "CANNOT_ARM_RELAY" in line_upper:
+                    if "TEMP" in line_upper:
+                        return jsonify({
+                            'status': 'error',
+                            'message': 'Cannot arm - temperature safety restriction',
+                            'current_temp': temperature_data['current_temp']
+                        }), 400
+                    elif "RELAY_INACTIVE" in line_upper or "CANNOT_ARM_RELAY" in line_upper:
                         return jsonify({
                             'status': 'error',
                             'message': 'Cannot arm - relay brake inactive'
@@ -667,6 +877,7 @@ def disarm_system():
             return jsonify({
                 'status': 'disarmed',
                 'message': 'System disarmed successfully',
+                'current_temp': temperature_data['current_temp'],
                 'response': response
             })
         else:
@@ -682,10 +893,10 @@ def disarm_system():
             'message': str(e)
         }), 500
 
-# Individual Motor Control Routes - SYNC COMMANDS
+# Individual Motor Control Routes - Temperature checks added
 @app.route('/api/motor/<int:motor_num>/start', methods=['POST'])
 def start_individual_motor(motor_num):
-    """Start individual motor - SYNC COMMAND"""
+    """Start individual motor with temperature safety checks"""
     if not arduino_controller or not arduino_controller.is_connected:
         return jsonify({'status': 'error', 'message': 'Arduino not connected'}), 503
     
@@ -694,6 +905,21 @@ def start_individual_motor(motor_num):
     
     if not system_state['relay_brake_active']:
         return jsonify({'status': 'error', 'message': 'Relay brake must be active to start motors'}), 400
+    
+    # Temperature safety checks
+    if temperature_data['temp_alarm']:
+        return jsonify({
+            'status': 'error', 
+            'message': 'Cannot start motor - temperature alarm active',
+            'current_temp': temperature_data['current_temp']
+        }), 400
+    
+    if temperature_data['current_temp'] > TEMP_ALARM_THRESHOLD - 3:
+        return jsonify({
+            'status': 'error', 
+            'message': f'Cannot start motor - temperature too high ({temperature_data["current_temp"]}°C)',
+            'max_safe_temp': TEMP_ALARM_THRESHOLD - 3
+        }), 400
     
     if motor_num not in range(1, 7):
         return jsonify({'status': 'error', 'message': 'Invalid motor number (1-6)'}), 400
@@ -718,7 +944,7 @@ def start_individual_motor(motor_num):
                 pin_mapping = {1: 2, 2: 4, 3: 5, 4: 6, 5: 3, 6: 7}
                 pin_num = pin_mapping.get(motor_num, "Unknown")
                 
-                logger.info(f"Motor {motor_num} ({motor_type}, Pin {pin_num}) started at {speed}%")
+                logger.info(f"Motor {motor_num} ({motor_type}, Pin {pin_num}) started at {speed}% - Temp: {temperature_data['current_temp']}°C")
                 return jsonify({
                     'status': 'success',
                     'motor': motor_num,
@@ -727,6 +953,7 @@ def start_individual_motor(motor_num):
                     'type': motor_type,
                     'pin': pin_num,
                     'message': f'Motor {motor_num} started at {speed}%',
+                    'current_temp': temperature_data['current_temp'],
                     'arduino_response': response
                 })
             else:
@@ -748,7 +975,7 @@ def start_individual_motor(motor_num):
 
 @app.route('/api/motor/<int:motor_num>/stop', methods=['POST'])
 def stop_individual_motor(motor_num):
-    """Stop individual motor - SYNC COMMAND"""
+    """Stop individual motor"""
     if not arduino_controller or not arduino_controller.is_connected:
         return jsonify({'status': 'error', 'message': 'Arduino not connected'}), 503
     
@@ -765,13 +992,14 @@ def stop_individual_motor(motor_num):
                     motor_states[motor_num] = False
                     individual_motor_speeds[motor_num] = 0
                 
-                logger.info(f"Motor {motor_num} stopped")
+                logger.info(f"Motor {motor_num} stopped - Temp: {temperature_data['current_temp']}°C")
                 return jsonify({
                     'status': 'success',
                     'motor': motor_num,
                     'action': 'stop',
                     'speed': 0,
                     'message': f'Motor {motor_num} stopped',
+                    'current_temp': temperature_data['current_temp'],
                     'arduino_response': response
                 })
             else:
@@ -791,7 +1019,7 @@ def stop_individual_motor(motor_num):
 
 @app.route('/api/motor/<int:motor_num>/speed', methods=['POST'])
 def set_individual_motor_speed(motor_num):
-    """Set individual motor speed - SYNC COMMAND"""
+    """Set individual motor speed with temperature safety checks"""
     if not arduino_controller or not arduino_controller.is_connected:
         return jsonify({'status': 'error', 'message': 'Arduino not connected'}), 503
     
@@ -800,6 +1028,14 @@ def set_individual_motor_speed(motor_num):
     
     if not system_state['relay_brake_active']:
         return jsonify({'status': 'error', 'message': 'Relay brake must be active to control motors'}), 400
+    
+    # Temperature safety checks
+    if temperature_data['temp_alarm']:
+        return jsonify({
+            'status': 'error', 
+            'message': 'Cannot control motor - temperature alarm active',
+            'current_temp': temperature_data['current_temp']
+        }), 400
     
     if motor_num not in range(1, 7):
         return jsonify({'status': 'error', 'message': 'Invalid motor number (1-6)'}), 400
@@ -822,12 +1058,13 @@ def set_individual_motor_speed(motor_num):
                 with state_lock:
                     individual_motor_speeds[motor_num] = speed
                 
-                logger.info(f"Motor {motor_num} speed set to {speed}%")
+                logger.info(f"Motor {motor_num} speed set to {speed}% - Temp: {temperature_data['current_temp']}°C")
                 return jsonify({
                     'status': 'success',
                     'motor': motor_num,
                     'speed': speed,
                     'message': f'Motor {motor_num} speed set to {speed}%',
+                    'current_temp': temperature_data['current_temp'],
                     'arduino_response': response
                 })
             else:
@@ -847,10 +1084,10 @@ def set_individual_motor_speed(motor_num):
         logger.error(f"Motor {motor_num} speed error: {e}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
-# Group Motor Control Routes - SYNC COMMANDS
+# Group Motor Control Routes with Temperature Safety
 @app.route('/api/levitation/start', methods=['POST'])
 def start_levitation_group():
-    """Start levitation group (Motors 1,2,3,4) - SYNC COMMAND"""
+    """Start levitation group with temperature safety checks"""
     if not arduino_controller or not arduino_controller.is_connected:
         return jsonify({'status': 'error', 'message': 'Arduino not connected'}), 503
     
@@ -859,6 +1096,21 @@ def start_levitation_group():
     
     if not system_state['relay_brake_active']:
         return jsonify({'status': 'error', 'message': 'Relay brake must be active to start motors'}), 400
+    
+    # Temperature safety checks
+    if temperature_data['temp_alarm']:
+        return jsonify({
+            'status': 'error', 
+            'message': 'Cannot start levitation group - temperature alarm active',
+            'current_temp': temperature_data['current_temp']
+        }), 400
+    
+    if temperature_data['current_temp'] > TEMP_ALARM_THRESHOLD - 3:
+        return jsonify({
+            'status': 'error', 
+            'message': f'Cannot start levitation group - temperature too high ({temperature_data["current_temp"]}°C)',
+            'max_safe_temp': TEMP_ALARM_THRESHOLD - 3
+        }), 400
     
     try:
         data = request.get_json() or {}
@@ -878,7 +1130,7 @@ def start_levitation_group():
                         motor_states[i] = True
                         individual_motor_speeds[i] = speed
                 
-                logger.info(f"Levitation group (Motors 1,2,3,4) started at {speed}%")
+                logger.info(f"Levitation group (Motors 1,2,3,4) started at {speed}% - Temp: {temperature_data['current_temp']}°C")
                 return jsonify({
                     'status': 'success',
                     'action': 'start',
@@ -887,6 +1139,7 @@ def start_levitation_group():
                     'pins': [2, 4, 5, 6],
                     'message': 'Levitation group started',
                     'group': 'levitation',
+                    'current_temp': temperature_data['current_temp'],
                     'arduino_response': response
                 })
             else:
@@ -908,7 +1161,7 @@ def start_levitation_group():
 
 @app.route('/api/levitation/stop', methods=['POST'])
 def stop_levitation_group():
-    """Stop levitation group - SYNC COMMAND"""
+    """Stop levitation group"""
     if not arduino_controller or not arduino_controller.is_connected:
         return jsonify({'status': 'error', 'message': 'Arduino not connected'}), 503
     
@@ -924,7 +1177,7 @@ def stop_levitation_group():
                         motor_states[i] = False
                         individual_motor_speeds[i] = 0
                 
-                logger.info("Levitation group stopped")
+                logger.info(f"Levitation group stopped - Temp: {temperature_data['current_temp']}°C")
                 return jsonify({
                     'status': 'success',
                     'action': 'stop',
@@ -932,6 +1185,7 @@ def stop_levitation_group():
                     'motors': list(range(1, 5)),
                     'message': 'Levitation group stopped',
                     'group': 'levitation',
+                    'current_temp': temperature_data['current_temp'],
                     'arduino_response': response
                 })
             else:
@@ -951,7 +1205,7 @@ def stop_levitation_group():
 
 @app.route('/api/levitation/speed', methods=['POST'])
 def set_levitation_speed():
-    """Set levitation group speed - SYNC COMMAND"""
+    """Set levitation group speed with temperature safety checks"""
     if not arduino_controller or not arduino_controller.is_connected:
         return jsonify({'status': 'error', 'message': 'Arduino not connected'}), 503
     
@@ -960,6 +1214,14 @@ def set_levitation_speed():
     
     if not system_state['relay_brake_active']:
         return jsonify({'status': 'error', 'message': 'Relay brake must be active to control motors'}), 400
+    
+    # Temperature safety checks
+    if temperature_data['temp_alarm']:
+        return jsonify({
+            'status': 'error', 
+            'message': 'Cannot control levitation group - temperature alarm active',
+            'current_temp': temperature_data['current_temp']
+        }), 400
     
     try:
         data = request.get_json()
@@ -982,13 +1244,14 @@ def set_levitation_speed():
                         if motor_states[i]:
                             individual_motor_speeds[i] = speed
                 
-                logger.info(f"Levitation group speed set to {speed}%")
+                logger.info(f"Levitation group speed set to {speed}% - Temp: {temperature_data['current_temp']}°C")
                 return jsonify({
                     'status': 'success',
                     'speed': speed,
                     'motors': list(range(1, 5)),
                     'message': 'Levitation group speed updated',
                     'group': 'levitation',
+                    'current_temp': temperature_data['current_temp'],
                     'arduino_response': response
                 })
             else:
@@ -1010,7 +1273,7 @@ def set_levitation_speed():
 
 @app.route('/api/thrust/start', methods=['POST'])
 def start_thrust_group():
-    """Start thrust group (Motors 5,6) - SYNC COMMAND"""
+    """Start thrust group with temperature safety checks"""
     if not arduino_controller or not arduino_controller.is_connected:
         return jsonify({'status': 'error', 'message': 'Arduino not connected'}), 503
     
@@ -1019,6 +1282,21 @@ def start_thrust_group():
     
     if not system_state['relay_brake_active']:
         return jsonify({'status': 'error', 'message': 'Relay brake must be active to start motors'}), 400
+    
+    # Temperature safety checks
+    if temperature_data['temp_alarm']:
+        return jsonify({
+            'status': 'error', 
+            'message': 'Cannot start thrust group - temperature alarm active',
+            'current_temp': temperature_data['current_temp']
+        }), 400
+    
+    if temperature_data['current_temp'] > TEMP_ALARM_THRESHOLD - 3:
+        return jsonify({
+            'status': 'error', 
+            'message': f'Cannot start thrust group - temperature too high ({temperature_data["current_temp"]}°C)',
+            'max_safe_temp': TEMP_ALARM_THRESHOLD - 3
+        }), 400
     
     try:
         data = request.get_json() or {}
@@ -1038,7 +1316,7 @@ def start_thrust_group():
                         motor_states[i] = True
                         individual_motor_speeds[i] = speed
                 
-                logger.info(f"Thrust group (Motors 5,6) started at {speed}%")
+                logger.info(f"Thrust group (Motors 5,6) started at {speed}% - Temp: {temperature_data['current_temp']}°C")
                 return jsonify({
                     'status': 'success',
                     'action': 'start',
@@ -1047,6 +1325,7 @@ def start_thrust_group():
                     'pins': [3, 7],
                     'message': 'Thrust group started',
                     'group': 'thrust',
+                    'current_temp': temperature_data['current_temp'],
                     'arduino_response': response
                 })
             else:
@@ -1068,7 +1347,7 @@ def start_thrust_group():
 
 @app.route('/api/thrust/stop', methods=['POST'])
 def stop_thrust_group():
-    """Stop thrust group - SYNC COMMAND"""
+    """Stop thrust group"""
     if not arduino_controller or not arduino_controller.is_connected:
         return jsonify({'status': 'error', 'message': 'Arduino not connected'}), 503
     
@@ -1084,7 +1363,7 @@ def stop_thrust_group():
                         motor_states[i] = False
                         individual_motor_speeds[i] = 0
                 
-                logger.info("Thrust group stopped")
+                logger.info(f"Thrust group stopped - Temp: {temperature_data['current_temp']}°C")
                 return jsonify({
                     'status': 'success',
                     'action': 'stop',
@@ -1092,6 +1371,7 @@ def stop_thrust_group():
                     'motors': list(range(5, 7)),
                     'message': 'Thrust group stopped',
                     'group': 'thrust',
+                    'current_temp': temperature_data['current_temp'],
                     'arduino_response': response
                 })
             else:
@@ -1111,7 +1391,7 @@ def stop_thrust_group():
 
 @app.route('/api/thrust/speed', methods=['POST'])
 def set_thrust_speed():
-    """Set thrust group speed - SYNC COMMAND"""
+    """Set thrust group speed with temperature safety checks"""
     if not arduino_controller or not arduino_controller.is_connected:
         return jsonify({'status': 'error', 'message': 'Arduino not connected'}), 503
     
@@ -1120,6 +1400,14 @@ def set_thrust_speed():
     
     if not system_state['relay_brake_active']:
         return jsonify({'status': 'error', 'message': 'Relay brake must be active to control motors'}), 400
+    
+    # Temperature safety checks
+    if temperature_data['temp_alarm']:
+        return jsonify({
+            'status': 'error', 
+            'message': 'Cannot control thrust group - temperature alarm active',
+            'current_temp': temperature_data['current_temp']
+        }), 400
     
     try:
         data = request.get_json()
@@ -1142,13 +1430,14 @@ def set_thrust_speed():
                         if motor_states[i]:
                             individual_motor_speeds[i] = speed
                 
-                logger.info(f"Thrust group speed set to {speed}%")
+                logger.info(f"Thrust group speed set to {speed}% - Temp: {temperature_data['current_temp']}°C")
                 return jsonify({
                     'status': 'success',
                     'speed': speed,
                     'motors': list(range(5, 7)),
                     'message': 'Thrust group speed updated',
                     'group': 'thrust',
+                    'current_temp': temperature_data['current_temp'],
                     'arduino_response': response
                 })
             else:
@@ -1168,10 +1457,10 @@ def set_thrust_speed():
         logger.error(f"Thrust speed error: {e}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
-# Brake Control Routes - SYNC COMMANDS
+# Brake Control Routes
 @app.route('/api/brake/<action>', methods=['POST'])
 def control_brake(action):
-    """Control software brake system - SYNC COMMAND"""
+    """Control software brake system"""
     if not arduino_controller or not arduino_controller.is_connected:
         return jsonify({'status': 'error', 'message': 'Arduino not connected'}), 503
     
@@ -1195,13 +1484,14 @@ def control_brake(action):
                         group_speeds['thrust'] = 0
                 
                 status = 'activated' if system_state['brake_active'] else 'deactivated'
-                logger.info(f"Software brake {status}")
+                logger.info(f"Software brake {status} - Temp: {temperature_data['current_temp']}°C")
                 
                 return jsonify({
                     'status': 'success',
                     'action': action,
                     'brake_active': system_state['brake_active'],
                     'message': f'Software brake {status}',
+                    'current_temp': temperature_data['current_temp'],
                     'arduino_response': response
                 })
             else:
@@ -1224,12 +1514,20 @@ def control_brake(action):
 
 @app.route('/api/relay-brake/<action>', methods=['POST'])
 def control_relay_brake(action):
-    """Control relay brake system - SYNC COMMAND"""
+    """Control relay brake system with temperature checks"""
     if not arduino_controller or not arduino_controller.is_connected:
         return jsonify({'status': 'error', 'message': 'Arduino not connected'}), 503
     
     if action not in ['on', 'off']:
         return jsonify({'status': 'error', 'message': 'Invalid action. Use "on" or "off"'}), 400
+    
+    # Temperature safety check for relay activation
+    if action == 'on' and temperature_data['temp_alarm']:
+        return jsonify({
+            'status': 'error',
+            'message': 'Cannot activate relay brake - temperature alarm active',
+            'current_temp': temperature_data['current_temp']
+        }), 400
     
     try:
         command = "RELAY_BRAKE_ON" if action == 'on' else "RELAY_BRAKE_OFF"
@@ -1249,7 +1547,7 @@ def control_relay_brake(action):
                         group_speeds['thrust'] = 0
                 
                 status = 'activated' if system_state['relay_brake_active'] else 'deactivated'
-                logger.info(f"Relay brake {status}")
+                logger.info(f"Relay brake {status} - Temp: {temperature_data['current_temp']}°C")
                 
                 return jsonify({
                     'status': 'success',
@@ -1257,6 +1555,7 @@ def control_relay_brake(action):
                     'relay_brake_active': system_state['relay_brake_active'],
                     'system_disarmed': not system_state['relay_brake_active'],
                     'message': f'Relay brake {status}',
+                    'current_temp': temperature_data['current_temp'],
                     'arduino_response': response
                 })
             else:
@@ -1280,13 +1579,14 @@ def control_relay_brake(action):
 # Emergency Stop Route
 @app.route('/api/emergency-stop', methods=['POST'])
 def emergency_stop():
-    """Emergency stop all systems - SYNC COMMAND"""
+    """Emergency stop all systems"""
     try:
         # Immediate local emergency actions
         with state_lock:
             system_state['armed'] = False
             system_state['brake_active'] = True
             system_state['relay_brake_active'] = False
+            system_state['temperature_emergency'] = True
             for i in range(1, 7):
                 motor_states[i] = False
                 individual_motor_speeds[i] = 0
@@ -1302,7 +1602,7 @@ def emergency_stop():
             except Exception as e:
                 logger.warning(f"Could not send emergency stop to Arduino: {e}")
         
-        logger.warning("EMERGENCY STOP ACTIVATED! All systems stopped!")
+        logger.warning(f"EMERGENCY STOP ACTIVATED! All systems stopped! Temp: {temperature_data['current_temp']}°C")
         
         return jsonify({
             'status': 'emergency_stop',
@@ -1311,6 +1611,8 @@ def emergency_stop():
             'system_disarmed': True,
             'brake_activated': True,
             'relay_brake_activated': False,
+            'current_temp': temperature_data['current_temp'],
+            'temperature_alarm': temperature_data['temp_alarm'],
             'timestamp': datetime.now().isoformat()
         })
             
@@ -1320,6 +1622,7 @@ def emergency_stop():
             'status': 'emergency_stop',
             'message': 'Emergency stop activated with error',
             'error': str(e),
+            'current_temp': temperature_data['current_temp'],
             'timestamp': datetime.now().isoformat()
         })
 
@@ -1340,7 +1643,9 @@ def test_connection():
                 'message': 'Arduino connection successful',
                 'port': arduino_controller.port,
                 'baudrate': arduino_controller.baudrate,
-                'attempts': arduino_controller.reconnect_attempts
+                'attempts': arduino_controller.reconnect_attempts,
+                'current_temp': temperature_data['current_temp'],
+                'temperature_system': 'active'
             })
         else:
             return jsonify({
@@ -1375,7 +1680,8 @@ def reconnect_arduino():
                 'status': 'success',
                 'message': 'Arduino reconnected successfully',
                 'port': arduino_controller.port,
-                'baudrate': arduino_controller.baudrate
+                'baudrate': arduino_controller.baudrate,
+                'temperature_monitoring': 'restarted'
             })
         else:
             return jsonify({
@@ -1408,11 +1714,27 @@ def ping():
             'relay_brake_active': system_state['relay_brake_active'],
             'active_motors': active_motors,
             'uptime_seconds': int(uptime_seconds),
+            'temperature': {
+                'current': temperature_data['current_temp'],
+                'alarm': temperature_data['temp_alarm'],
+                'buzzer_active': temperature_data['buzzer_active'],
+                'emergency_active': system_state['temperature_emergency'],
+                'thresholds': {
+                    'alarm': TEMP_ALARM_THRESHOLD,
+                    'safe': TEMP_SAFE_THRESHOLD,
+                    'warning': TEMP_WARNING_THRESHOLD
+                }
+            },
             'motor_pins': {
                 'thrust': [3, 7],
                 'levitation': [2, 4, 5, 6]
             },
-            'version': '3.2-fixed-sync',
+            'safety_pins': {
+                'temperature_sensor': 8,
+                'buzzer': 9,
+                'relay_brake': 11
+            },
+            'version': '3.3-temperature-safety',
             'port': arduino_controller.port if arduino_controller else None
         })
         
@@ -1432,8 +1754,10 @@ def not_found(error):
         'message': 'Endpoint not found',
         'available_endpoints': [
             'GET /api/status',
+            'GET /api/temperature',
             'GET /api/ping',
             'GET /api/test-connection',
+            'POST /api/temperature/buzzer/off',
             'POST /api/system/arm',
             'POST /api/system/disarm',
             'POST /api/motor/<num>/start',
@@ -1487,6 +1811,16 @@ def background_monitor():
                 except queue.Empty:
                     pass
             
+            # Temperature safety monitoring
+            with state_lock:
+                if temperature_data['temp_alarm'] and not system_state['temperature_emergency']:
+                    logger.warning("Temperature alarm detected but emergency not set - correcting state")
+                    system_state['temperature_emergency'] = True
+                
+                # Clean old temperature history
+                if len(temperature_data['temp_history']) > MAX_TEMP_HISTORY:
+                    temperature_data['temp_history'] = temperature_data['temp_history'][-MAX_TEMP_HISTORY:]
+            
             shutdown_event.wait(30)
             
         except Exception as e:
@@ -1534,9 +1868,9 @@ signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
 if __name__ == '__main__':
-    logger.info("=" * 60)
-    logger.info("SpectraLoop Backend Final v3.2 - FIXED SYNC COMMANDS")
-    logger.info("=" * 60)
+    logger.info("=" * 70)
+    logger.info("SpectraLoop Backend Final v3.3 - TEMPERATURE SAFETY SYSTEM")
+    logger.info("=" * 70)
     
     try:
         if arduino_controller and arduino_controller.is_connected:
@@ -1549,11 +1883,24 @@ if __name__ == '__main__':
         logger.info("Motor Pin Mapping:")
         logger.info("   Thrust Motors: M5->Pin3, M6->Pin7")
         logger.info("   Levitation Motors: M1->Pin2, M2->Pin4, M3->Pin5, M4->Pin6")
+        
+        logger.info("Safety System:")
+        logger.info("   Temperature Sensor: DS18B20 on Pin8")
+        logger.info("   Buzzer Alarm: Pin9")
         logger.info("   Relay Brake: Pin11")
         
-        logger.info("FIXED: All motor commands now use SYNC communication")
-        logger.info("FIXED: Arduino responses are properly validated")
-        logger.info("FIXED: Motor states updated only after Arduino confirmation")
+        logger.info("Temperature Safety Thresholds:")
+        logger.info(f"   Emergency Stop: {TEMP_ALARM_THRESHOLD}°C")
+        logger.info(f"   Safe Return: {TEMP_SAFE_THRESHOLD}°C")
+        logger.info(f"   Warning Level: {TEMP_WARNING_THRESHOLD}°C")
+        
+        logger.info("NEW FEATURES:")
+        logger.info("   ✅ Real-time temperature monitoring")
+        logger.info("   ✅ Automatic emergency stop at 55°C")
+        logger.info("   ✅ Buzzer alarm system")
+        logger.info("   ✅ Temperature history tracking")
+        logger.info("   ✅ Motor start prevention when hot")
+        logger.info("   ✅ Enhanced safety checks")
         
         logger.info("Server Configuration:")
         logger.info("   Host: 0.0.0.0")
@@ -1561,8 +1908,8 @@ if __name__ == '__main__':
         logger.info("   Debug: False")
         logger.info("   Threaded: True")
         
-        logger.info("=" * 60)
-        logger.info("Starting Flask server...")
+        logger.info("=" * 70)
+        logger.info("Starting Flask server with temperature safety system...")
         
         app.run(
             host='0.0.0.0', 

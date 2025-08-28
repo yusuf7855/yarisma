@@ -10,7 +10,7 @@
     <!-- Header -->
     <div class="header">
         <div class="logo">SPECTRALOOP FINAL v3.2 - PRODUCTION</div>
-        <div class="subtitle">Production Motor Control System - Levitation(1-4) Thrust(5-6)</div>
+        <div class="subtitle">Production Motor Control System - Levitation(1-4) Thrust(5-6) - Temperature Safety</div>
     </div>
 
     <!-- Main Container -->
@@ -18,6 +18,62 @@
         <!-- Left Panel - Individual Motor Controls -->
         <div class="control-panel">
             <div class="panel-title">🎛️ İndividüel Motor Kontrolleri</div>
+            
+            <!-- Temperature Section - NEW -->
+            <div class="temperature-section" id="temperature-section">
+                <div class="temperature-header">
+                    <h4>🌡️ Sistem Sıcaklığı</h4>
+                    <div class="temp-emergency-indicator" id="temp-emergency" style="display: none;">
+                        <span class="emergency-text">ALARM!</span>
+                    </div>
+                </div>
+                
+                <div class="temperature-main">
+                    <div class="temp-reading-container">
+                        <div class="temp-current" id="temp-current">25.0°C</div>
+                        <div class="temp-status-text" id="temp-status-text">Güvenli</div>
+                    </div>
+                    
+                    <div class="temp-details">
+                        <div class="temp-detail-item">
+                            <span class="temp-label">Max:</span>
+                            <span class="temp-value" id="temp-max">25.0°C</span>
+                        </div>
+                        <div class="temp-detail-item">
+                            <span class="temp-label">Alarm:</span>
+                            <span class="temp-value" id="temp-alarm-count">0</span>
+                        </div>
+                        <div class="temp-detail-item">
+                            <span class="temp-label">Buzzer:</span>
+                            <span class="temp-value" id="buzzer-status">Pasif</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="temp-thresholds">
+                    <div class="threshold-item safe">
+                        <div class="threshold-label">Güvenli</div>
+                        <div class="threshold-value">&lt; 50°C</div>
+                    </div>
+                    <div class="threshold-item warning">
+                        <div class="threshold-label">Uyarı</div>
+                        <div class="threshold-value">50-55°C</div>
+                    </div>
+                    <div class="threshold-item danger">
+                        <div class="threshold-label">Tehlike</div>
+                        <div class="threshold-value">≥ 55°C</div>
+                    </div>
+                </div>
+                
+                <div class="temp-controls">
+                    <button class="buzzer-btn" id="buzzer-off-btn" onclick="turnOffBuzzer()" disabled>
+                        🔇 Buzzer Kapat
+                    </button>
+                    <div class="temp-last-update">
+                        Son güncelleme: <span id="temp-last-update">--:--:--</span>
+                    </div>
+                </div>
+            </div>
             
             <!-- System Status -->
             <div class="system-status">
@@ -195,6 +251,29 @@
         <div class="control-panel">
             <div class="panel-title">📊 Sistem Bilgileri</div>
             
+            <!-- Temperature Info Section - Enhanced -->
+            <div class="info-section">
+                <h4 class="section-title">🌡️ Sıcaklık Detayları</h4>
+                <div class="info-grid">
+                    <div class="info-item">
+                        <div class="info-label">Mevcut</div>
+                        <div class="info-value temp-value" id="detailed-temp-current">25.0°C</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">Durum</div>
+                        <div class="info-value" id="detailed-temp-status">Güvenli</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">Maximum</div>
+                        <div class="info-value" id="detailed-temp-max">25.0°C</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">Alarm Sayısı</div>
+                        <div class="info-value" id="detailed-alarm-count">0</div>
+                    </div>
+                </div>
+            </div>
+            
             <!-- Performance Info -->
             <div class="info-section">
                 <h4 class="section-title">📈 Performans</h4>
@@ -308,6 +387,18 @@
     <div class="emergency-stop" onclick="emergencyStop()">
         <div class="emergency-icon">🚨</div>
         <div class="emergency-text">STOP</div>
+    </div>
+
+    <!-- Temperature Emergency Warning -->
+    <div class="temperature-emergency-warning" id="temperature-emergency-warning" style="display: none;">
+        <div class="warning-content">
+            <div class="warning-icon">🌡️🚨</div>
+            <div class="warning-text">
+                <div class="warning-title">SICAKLIK ALARMI!</div>
+                <div class="warning-subtitle">Sistem güvenlik nedeniyle durduruldu</div>
+                <div class="warning-temp">Sıcaklık: <span id="warning-temp-value">--°C</span></div>
+            </div>
+        </div>
     </div>
 
     <!-- Notification -->

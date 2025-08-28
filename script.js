@@ -1,11 +1,11 @@
 /*
- * SpectraLoop Frontend JavaScript v3.2 - Production
- * Complete Motor Control System
+ * SpectraLoop Frontend JavaScript v3.2 - Production with Temperature Display
+ * Complete Motor Control System + Temperature Safety
  * Backend IP: Update BACKEND_URL with your Raspberry Pi IP
  */
 
 // Configuration - UPDATE WITH YOUR RASPBERRY PI IP
-const BACKEND_URL = 'http://172.20.10.3:5001';
+const BACKEND_URL = 'http://10.237.49.82:5001';
 
 // System State Management
 let systemState = {
@@ -16,7 +16,16 @@ let systemState = {
     motorStates: {1: false, 2: false, 3: false, 4: false, 5: false, 6: false},
     individualMotorSpeeds: {1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0},
     groupSpeeds: {levitation: 0, thrust: 0},
-    connectionStatus: {backend: false, arduino: false}
+    connectionStatus: {backend: false, arduino: false},
+    temperature: {
+        current: 25.0,
+        alarm: false,
+        buzzer_active: false,
+        max_reached: 25.0,
+        last_update: null,
+        emergency_active: false,
+        alarm_count: 0
+    }
 };
 
 // Application State
@@ -27,7 +36,10 @@ let appState = {
     consecutiveErrors: 0,
     commandLog: [],
     statusUpdateInterval: null,
-    isInitialized: false
+    isInitialized: false,
+    lastTempAlarmNotified: false,
+    temperatureHistory: [],
+    tempWarningShown: false
 };
 
 // Constants
@@ -37,7 +49,10 @@ const CONFIG = {
     STATUS_UPDATE_INTERVAL: 2000,
     CONNECTION_TIMEOUT: 8000,
     MAX_LOG_ENTRIES: 25,
-    NOTIFICATION_TIMEOUT: 4000
+    NOTIFICATION_TIMEOUT: 4000,
+    TEMP_SAFE_THRESHOLD: 50,
+    TEMP_WARNING_THRESHOLD: 45,
+    TEMP_ALARM_THRESHOLD: 55
 };
 
 // Utility Functions
@@ -82,6 +97,184 @@ class Utils {
 
     static clamp(value, min, max) {
         return Math.min(Math.max(value, min), max);
+    }
+}
+
+// Temperature Manager
+class TemperatureManager {
+    static updateTemperatureDisplay(tempData) {
+        if (!tempData) return;
+        
+        const currentTemp = tempData.current || 25.0;
+        const tempAlarm = tempData.alarm || false;
+        const buzzerActive = tempData.buzzer_active || false;
+        const maxTemp = tempData.max_reached || currentTemp;
+        const alarmCount = tempData.alarm_count || 0;
+        const emergencyActive = tempData.emergency_active || false;
+        
+        // Update main temperature reading
+        const tempCurrentEl = document.getElementById('temp-current');
+        const tempStatusEl = document.getElementById('temp-status-text');
+        const tempSectionEl = document.getElementById('temperature-section');
+        
+        if (tempCurrentEl) {
+            tempCurrentEl.textContent = `${currentTemp.toFixed(1)}°C`;
+            tempCurrentEl.className = 'temp-current';
+            
+            if (tempAlarm || currentTemp >= CONFIG.TEMP_ALARM_THRESHOLD) {
+                tempCurrentEl.classList.add('danger');
+            } else if (currentTemp >= CONFIG.TEMP_WARNING_THRESHOLD) {
+                tempCurrentEl.classList.add('warning');
+            }
+        }
+        
+        if (tempStatusEl) {
+            if (tempAlarm || emergencyActive) {
+                tempStatusEl.textContent = 'ALARM!';
+            } else if (currentTemp >= CONFIG.TEMP_WARNING_THRESHOLD) {
+                tempStatusEl.textContent = 'Uyarı';
+            } else {
+                tempStatusEl.textContent = 'Güvenli';
+            }
+        }
+        
+        if (tempSectionEl) {
+            tempSectionEl.className = 'temperature-section';
+            if (tempAlarm || emergencyActive) {
+                tempSectionEl.classList.add('danger');
+            } else if (currentTemp >= CONFIG.TEMP_WARNING_THRESHOLD) {
+                tempSectionEl.classList.add('warning');
+            }
+        }
+        
+        // Update temperature details
+        const elements = {
+            'temp-max': `${maxTemp.toFixed(1)}°C`,
+            'temp-alarm-count': alarmCount,
+            'buzzer-status': buzzerActive ? 'Aktif' : 'Pasif',
+            'detailed-temp-current': `${currentTemp.toFixed(1)}°C`,
+            'detailed-temp-max': `${maxTemp.toFixed(1)}°C`,
+            'detailed-alarm-count': alarmCount,
+            'system-temperature': `${currentTemp.toFixed(0)}°C`
+        };
+        
+        Object.entries(elements).forEach(([id, value]) => {
+            const element = document.getElementById(id);
+            if (element) element.textContent = value;
+        });
+        
+        // Update detailed status
+        const detailedStatusEl = document.getElementById('detailed-temp-status');
+        if (detailedStatusEl) {
+            if (tempAlarm || emergencyActive) {
+                detailedStatusEl.textContent = 'ALARM';
+                detailedStatusEl.style.color = '#ff4757';
+            } else if (currentTemp >= CONFIG.TEMP_WARNING_THRESHOLD) {
+                detailedStatusEl.textContent = 'Uyarı';
+                detailedStatusEl.style.color = '#ffc107';
+            } else {
+                detailedStatusEl.textContent = 'Güvenli';
+                detailedStatusEl.style.color = '#00ff88';
+            }
+        }
+        
+        // Update buzzer button
+        const buzzerBtn = document.getElementById('buzzer-off-btn');
+        if (buzzerBtn) {
+            buzzerBtn.disabled = !buzzerActive;
+        }
+        
+        // Show/hide emergency indicators
+        const tempEmergencyEl = document.getElementById('temp-emergency');
+        if (tempEmergencyEl) {
+            tempEmergencyEl.style.display = (tempAlarm || emergencyActive) ? 'block' : 'none';
+        }
+        
+        const emergencyWarning = document.getElementById('temperature-emergency-warning');
+        const warningTempValue = document.getElementById('warning-temp-value');
+        if (emergencyWarning) {
+            if (tempAlarm || emergencyActive) {
+                emergencyWarning.style.display = 'block';
+                if (warningTempValue) {
+                    warningTempValue.textContent = `${currentTemp.toFixed(1)}°C`;
+                }
+            } else {
+                emergencyWarning.style.display = 'none';
+            }
+        }
+        
+        // Update last update time
+        const lastUpdateEl = document.getElementById('temp-last-update');
+        if (lastUpdateEl) {
+            lastUpdateEl.textContent = Utils.formatTime(new Date());
+        }
+        
+        // Store temperature data in system state
+        systemState.temperature = {
+            current: currentTemp,
+            alarm: tempAlarm,
+            buzzer_active: buzzerActive,
+            max_reached: maxTemp,
+            last_update: new Date(),
+            emergency_active: emergencyActive,
+            alarm_count: alarmCount
+        };
+        
+        // Handle temperature notifications
+        this.handleTemperatureNotifications(tempAlarm, emergencyActive, currentTemp);
+    }
+    
+    static handleTemperatureNotifications(tempAlarm, emergencyActive, currentTemp) {
+        // Temperature alarm notifications
+        if ((tempAlarm || emergencyActive) && !appState.lastTempAlarmNotified) {
+            NotificationManager.show(
+                `SICAKLIK ALARMI! ${currentTemp.toFixed(1)}°C - Sistem durduruldu!`, 
+                'error', 
+                8000
+            );
+            appState.lastTempAlarmNotified = true;
+        } else if (!(tempAlarm || emergencyActive) && appState.lastTempAlarmNotified) {
+            NotificationManager.show(
+                `Sıcaklık güvenli seviyeye döndü: ${currentTemp.toFixed(1)}°C`, 
+                'success'
+            );
+            appState.lastTempAlarmNotified = false;
+        }
+        
+        // Warning level notifications
+        if (currentTemp >= CONFIG.TEMP_WARNING_THRESHOLD && currentTemp < CONFIG.TEMP_ALARM_THRESHOLD) {
+            if (!appState.tempWarningShown) {
+                NotificationManager.show(
+                    `Sıcaklık uyarı seviyesinde: ${currentTemp.toFixed(1)}°C`, 
+                    'warning'
+                );
+                appState.tempWarningShown = true;
+            }
+        } else {
+            appState.tempWarningShown = false;
+        }
+    }
+    
+    static async turnOffBuzzer() {
+        try {
+            const response = await RequestHandler.makeRequest(`${BACKEND_URL}/api/temperature/buzzer/off`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            });
+            
+            const data = await response.json();
+            
+            if (data.status === 'success') {
+                systemState.temperature.buzzer_active = false;
+                NotificationManager.show('Buzzer kapatıldı', 'success');
+                CommandLogger.log('Buzzer kapatıldı', true);
+            } else {
+                throw new Error(data.message || 'Buzzer kapatılamadı');
+            }
+        } catch (error) {
+            CommandLogger.log('Buzzer kapatma', false, error.message);
+            NotificationManager.show(`Buzzer kapatılamadı: ${error.message}`, 'error');
+        }
     }
 }
 
@@ -202,7 +395,6 @@ class NotificationManager {
         
         if (!notification || !messageElement || !iconElement) return;
 
-        // Set icon based on type
         const icons = {
             success: '✅',
             error: '❌',
@@ -213,10 +405,8 @@ class NotificationManager {
         iconElement.textContent = icons[type] || icons.info;
         messageElement.textContent = message;
         
-        // Remove existing classes and add new ones
         notification.className = `notification ${type} show`;
         
-        // Auto hide after duration
         setTimeout(() => {
             this.hide();
         }, duration);
@@ -259,7 +449,6 @@ class ConnectionManager {
             }
         }
 
-        // Update last update time
         if (connected) {
             const lastUpdateElement = document.getElementById('last-update');
             if (lastUpdateElement) {
@@ -270,14 +459,14 @@ class ConnectionManager {
 
     static async testConnection() {
         try {
-            NotificationManager.show('🔍 Bağlantı test ediliyor...', 'info');
+            NotificationManager.show('Bağlantı test ediliyor...', 'info');
             
             const response = await RequestHandler.makeRequest(`${BACKEND_URL}/api/test-connection`);
             const data = await response.json();
             
             if (data.status === 'success') {
                 CommandLogger.log('Bağlantı testi başarılı', true);
-                NotificationManager.show('✅ Bağlantı testi başarılı!', 'success');
+                NotificationManager.show('Bağlantı testi başarılı!', 'success');
                 this.updateConnectionStatus('backend', true);
                 this.updateConnectionStatus('arduino', true);
             } else {
@@ -286,7 +475,7 @@ class ConnectionManager {
             
         } catch (error) {
             CommandLogger.log('Bağlantı testi', false, error.message);
-            NotificationManager.show(`❌ Bağlantı testi başarısız: ${error.message}`, 'error');
+            NotificationManager.show(`Bağlantı testi başarısız: ${error.message}`, 'error');
             this.updateConnectionStatus('backend', false);
             this.updateConnectionStatus('arduino', false);
         }
@@ -294,7 +483,7 @@ class ConnectionManager {
 
     static async reconnectArduino() {
         try {
-            NotificationManager.show('🔄 Arduino yeniden bağlanıyor...', 'info');
+            NotificationManager.show('Arduino yeniden bağlanıyor...', 'info');
             
             const response = await RequestHandler.makeRequest(`${BACKEND_URL}/api/reconnect`, {
                 method: 'POST'
@@ -304,15 +493,15 @@ class ConnectionManager {
             
             if (data.status === 'success') {
                 CommandLogger.log('Arduino yeniden bağlandı', true);
-                NotificationManager.show('✅ Arduino yeniden bağlandı!', 'success');
-                setTimeout(StatusManager.pollStatus, 1000);
+                NotificationManager.show('Arduino yeniden bağlandı!', 'success');
+                setTimeout(() => StatusManager.pollStatus(), 1000);
             } else {
                 throw new Error(data.message || 'Reconnection failed');
             }
             
         } catch (error) {
             CommandLogger.log('Arduino yeniden bağlanma', false, error.message);
-            NotificationManager.show(`❌ Arduino yeniden bağlanamadı: ${error.message}`, 'error');
+            NotificationManager.show(`Arduino yeniden bağlanamadı: ${error.message}`, 'error');
         }
     }
 }
@@ -320,19 +509,25 @@ class ConnectionManager {
 // Motor Control
 class MotorController {
     static async startMotor(motorNum) {
+        if (systemState.temperature.alarm || systemState.temperature.emergency_active) {
+            NotificationManager.show('Sıcaklık alarmı nedeniyle motorlar başlatılamaz!', 'warning');
+            return;
+        }
+        
         if (!systemState.armed) {
-            NotificationManager.show('⚠️ Önce sistemi hazırlamanız gerekiyor!', 'warning');
+            NotificationManager.show('Önce sistemi hazırlamanız gerekiyor!', 'warning');
             return;
         }
 
         if (!systemState.relayBrakeActive) {
-            NotificationManager.show('⚠️ Röle pasif! Önce röleyi aktif yapın.', 'warning');
+            NotificationManager.show('Röle pasif! Önce röleyi aktif yapın.', 'warning');
             return;
         }
 
         RequestHandler.throttleRequest(async () => {
             try {
-                const speed = parseInt(document.getElementById(`motor${motorNum}-speed-input`).value) || 50;
+                const speedInput = document.getElementById(`motor${motorNum}-speed-input`);
+                const speed = speedInput ? parseInt(speedInput.value) || 50 : 50;
                 
                 const response = await RequestHandler.makeRequest(`${BACKEND_URL}/api/motor/${motorNum}/start`, {
                     method: 'POST',
@@ -340,18 +535,17 @@ class MotorController {
                 });
 
                 if (response.ok) {
-                    const data = await response.json();
                     systemState.motorStates[motorNum] = true;
                     systemState.individualMotorSpeeds[motorNum] = speed;
                     UIManager.updateMotorStatus(motorNum, true, speed);
                     UIManager.updateMotorCount();
-                    CommandLogger.log(`Motor ${motorNum} başlatıldı`, true, `${speed}%`);
-                    NotificationManager.show(`🎯 Motor ${motorNum} başlatıldı!`, 'success');
+                    CommandLogger.log(`Motor ${motorNum} başlatıldı`, true, `${speed}% - Temp: ${systemState.temperature.current.toFixed(1)}°C`);
+                    NotificationManager.show(`Motor ${motorNum} başlatıldı!`, 'success');
                 }
 
             } catch (error) {
                 CommandLogger.log(`Motor ${motorNum} başlatma`, false, error.message);
-                NotificationManager.show(`❌ Motor ${motorNum} başlatılamadı: ${error.message}`, 'error');
+                NotificationManager.show(`Motor ${motorNum} başlatılamadı: ${error.message}`, 'error');
                 console.error('Motor start error:', error);
             }
         });
@@ -370,31 +564,36 @@ class MotorController {
                     UIManager.updateMotorStatus(motorNum, false, 0);
                     UIManager.updateMotorCount();
                     CommandLogger.log(`Motor ${motorNum} durduruldu`, true);
-                    NotificationManager.show(`🎯 Motor ${motorNum} durduruldu!`, 'success');
+                    NotificationManager.show(`Motor ${motorNum} durduruldu!`, 'success');
                 }
 
             } catch (error) {
                 CommandLogger.log(`Motor ${motorNum} durdurma`, false, error.message);
-                NotificationManager.show(`❌ Motor ${motorNum} durdurulamadı: ${error.message}`, 'error');
+                NotificationManager.show(`Motor ${motorNum} durdurulamadı: ${error.message}`, 'error');
                 console.error('Motor stop error:', error);
             }
         });
     }
 
     static async setMotorSpeed(motorNum, speed) {
+        if (systemState.temperature.alarm || systemState.temperature.emergency_active) {
+            NotificationManager.show('Sıcaklık alarmı nedeniyle motor kontrol edilemez!', 'warning');
+            return;
+        }
+        
         if (!systemState.armed) {
-            NotificationManager.show('⚠️ Sistem armed değil!', 'warning');
+            NotificationManager.show('Sistem armed değil!', 'warning');
             return;
         }
 
         if (!systemState.relayBrakeActive) {
-            NotificationManager.show('⚠️ Röle pasif! Önce röleyi aktif yapın.', 'warning');
+            NotificationManager.show('Röle pasif! Önce röleyi aktif yapın.', 'warning');
             return;
         }
 
         speed = Utils.clamp(parseInt(speed), 0, 100);
         if (isNaN(speed)) {
-            NotificationManager.show('⚠️ Geçersiz hız değeri!', 'warning');
+            NotificationManager.show('Geçersiz hız değeri!', 'warning');
             return;
         }
 
@@ -413,7 +612,7 @@ class MotorController {
 
             } catch (error) {
                 CommandLogger.log(`Motor ${motorNum} hız`, false, error.message);
-                NotificationManager.show(`❌ Motor ${motorNum} hız ayarlanamadı`, 'error');
+                NotificationManager.show(`Motor ${motorNum} hız ayarlanamadı`, 'error');
                 console.error('Motor speed error:', error);
             }
         });
@@ -423,13 +622,18 @@ class MotorController {
 // Group Control
 class GroupController {
     static async startGroup(groupType) {
+        if (systemState.temperature.alarm || systemState.temperature.emergency_active) {
+            NotificationManager.show('Sıcaklık alarmı nedeniyle motor grubu başlatılamaz!', 'warning');
+            return;
+        }
+        
         if (!systemState.armed) {
-            NotificationManager.show('⚠️ Önce sistemi hazırlamanız gerekiyor!', 'warning');
+            NotificationManager.show('Önce sistemi hazırlamanız gerekiyor!', 'warning');
             return;
         }
 
         if (!systemState.relayBrakeActive) {
-            NotificationManager.show('⚠️ Röle pasif! Önce röleyi aktif yapın.', 'warning');
+            NotificationManager.show('Röle pasif! Önce röleyi aktif yapın.', 'warning');
             return;
         }
 
@@ -443,10 +647,8 @@ class GroupController {
                 });
 
                 if (response.ok) {
-                    const data = await response.json();
                     systemState.groupSpeeds[groupType] = speed;
                     
-                    // Update motor states
                     const motorRange = groupType === 'levitation' ? [1,2,3,4] : [5,6];
                     motorRange.forEach(motorNum => {
                         systemState.motorStates[motorNum] = true;
@@ -460,13 +662,13 @@ class GroupController {
                     UIManager.updateMotorCount();
                     
                     const groupName = groupType === 'levitation' ? 'Levitasyon' : 'İtki';
-                    CommandLogger.log(`${groupName} grubu başlatıldı`, true, `${speed}% - M${motorRange.join(',')}`);
-                    NotificationManager.show(`🚀 ${groupName} grubu başlatıldı! (M${motorRange.join(',')})`, 'success');
+                    CommandLogger.log(`${groupName} grubu başlatıldı`, true, `${speed}% - M${motorRange.join(',')} - Temp: ${systemState.temperature.current.toFixed(1)}°C`);
+                    NotificationManager.show(`${groupName} grubu başlatıldı! (M${motorRange.join(',')})`, 'success');
                 }
 
             } catch (error) {
                 CommandLogger.log(`${groupType} başlatma`, false, error.message);
-                NotificationManager.show(`❌ ${groupType} grubu başlatılamadı: ${error.message}`, 'error');
+                NotificationManager.show(`${groupType} grubu başlatılamadı: ${error.message}`, 'error');
                 console.error('Group start error:', error);
             }
         });
@@ -482,7 +684,6 @@ class GroupController {
                 if (response.ok) {
                     systemState.groupSpeeds[groupType] = 0;
                     
-                    // Update motor states
                     const motorRange = groupType === 'levitation' ? [1,2,3,4] : [5,6];
                     motorRange.forEach(motorNum => {
                         systemState.motorStates[motorNum] = false;
@@ -495,12 +696,12 @@ class GroupController {
                     
                     const groupName = groupType === 'levitation' ? 'Levitasyon' : 'İtki';
                     CommandLogger.log(`${groupName} grubu durduruldu`, true, `M${motorRange.join(',')}`);
-                    NotificationManager.show(`🛑 ${groupName} grubu durduruldu! (M${motorRange.join(',')})`, 'success');
+                    NotificationManager.show(`${groupName} grubu durduruldu! (M${motorRange.join(',')})`, 'success');
                 }
 
             } catch (error) {
                 CommandLogger.log(`${groupType} durdurma`, false, error.message);
-                NotificationManager.show(`❌ ${groupType} grubu durdurulamadı: ${error.message}`, 'error');
+                NotificationManager.show(`${groupType} grubu durdurulamadı: ${error.message}`, 'error');
                 console.error('Group stop error:', error);
             }
         });
@@ -511,7 +712,6 @@ class GroupController {
         systemState.groupSpeeds[groupType] = speed;
         UIManager.updateGroupSpeedDisplay(groupType, speed);
         
-        // Debounce the actual API call
         clearTimeout(window[`${groupType}SpeedTimeout`]);
         window[`${groupType}SpeedTimeout`] = setTimeout(() => {
             this.sendGroupSpeed(groupType, speed);
@@ -528,6 +728,7 @@ class GroupController {
     }
 
     static async sendGroupSpeed(groupType, speed) {
+        if (systemState.temperature.alarm || systemState.temperature.emergency_active) return;
         if (!systemState.armed || !systemState.relayBrakeActive) return;
 
         RequestHandler.throttleRequest(async () => {
@@ -538,7 +739,6 @@ class GroupController {
                 });
 
                 if (response.ok) {
-                    // Update motor speeds for active motors in the group
                     const motorRange = groupType === 'levitation' ? [1,2,3,4] : [5,6];
                     motorRange.forEach(motorNum => {
                         if (systemState.motorStates[motorNum]) {
@@ -563,14 +763,18 @@ class GroupController {
 // System Controller
 class SystemController {
     static async toggleArm() {
+        if (!systemState.armed && (systemState.temperature.alarm || systemState.temperature.emergency_active)) {
+            NotificationManager.show('Sıcaklık alarmı nedeniyle sistem hazırlanamaz!', 'warning');
+            return;
+        }
+        
         RequestHandler.throttleRequest(async () => {
             try {
                 const action = systemState.armed ? 'disarm' : 'arm';
                 console.log(`Attempting to ${action} system`);
                 
-                // If arming and relay is inactive, activate relay first
                 if (action === 'arm' && !systemState.relayBrakeActive) {
-                    NotificationManager.show('🔧 Röle aktif hale getiriliyor, sistem hazırlanıyor...', 'info');
+                    NotificationManager.show('Röle aktif hale getiriliyor, sistem hazırlanıyor...', 'info');
                     
                     const relayResponse = await RequestHandler.makeRequest(`${BACKEND_URL}/api/relay-brake/on`, {
                         method: 'POST'
@@ -591,12 +795,10 @@ class SystemController {
                 });
 
                 if (response.ok) {
-                    const data = await response.json();
                     systemState.armed = !systemState.armed;
                     UIManager.updateArmButton();
                     
                     if (!systemState.armed) {
-                        // Reset all motor states when disarming
                         Object.keys(systemState.motorStates).forEach(motorNum => {
                             systemState.motorStates[motorNum] = false;
                             systemState.individualMotorSpeeds[motorNum] = 0;
@@ -610,19 +812,24 @@ class SystemController {
                     }
                     
                     const statusText = action === 'arm' ? 'hazırlandı' : 'devre dışı bırakıldı';
-                    CommandLogger.log(`Sistem ${statusText}`, true);
-                    NotificationManager.show(`🎯 Sistem ${statusText}!`, 'success');
+                    CommandLogger.log(`Sistem ${statusText}`, true, `Temp: ${systemState.temperature.current.toFixed(1)}°C`);
+                    NotificationManager.show(`Sistem ${statusText}!`, 'success');
                 }
 
             } catch (error) {
                 CommandLogger.log('Arm/Disarm', false, error.message);
-                NotificationManager.show(`❌ Sistem hatası: ${error.message}`, 'error');
+                NotificationManager.show(`Sistem hatası: ${error.message}`, 'error');
                 console.error('Arm/Disarm error:', error);
             }
         });
     }
 
     static async controlRelayBrake(action) {
+        if (action === 'on' && (systemState.temperature.alarm || systemState.temperature.emergency_active)) {
+            NotificationManager.show('Sıcaklık alarmı nedeniyle röle aktif yapılamaz!', 'warning');
+            return;
+        }
+        
         RequestHandler.throttleRequest(async () => {
             try {
                 console.log(`Attempting relay brake ${action}`);
@@ -632,11 +839,9 @@ class SystemController {
                 });
 
                 if (response.ok) {
-                    const data = await response.json();
                     systemState.relayBrakeActive = (action === 'on');
                     UIManager.updateRelayBrakeStatus();
                     
-                    // If relay is turned off, reset all motors
                     if (!systemState.relayBrakeActive) {
                         Object.keys(systemState.motorStates).forEach(motorNum => {
                             systemState.motorStates[motorNum] = false;
@@ -651,13 +856,13 @@ class SystemController {
                     }
                     
                     const status = systemState.relayBrakeActive ? 'aktif' : 'pasif';
-                    CommandLogger.log(`Röle ${status}`, true);
-                    NotificationManager.show(`🔌 Röle sistem ${status}!`, systemState.relayBrakeActive ? 'success' : 'warning');
+                    CommandLogger.log(`Röle ${status}`, true, `Temp: ${systemState.temperature.current.toFixed(1)}°C`);
+                    NotificationManager.show(`Röle sistem ${status}!`, systemState.relayBrakeActive ? 'success' : 'warning');
                 }
 
             } catch (error) {
                 CommandLogger.log('Röle kontrol', false, error.message);
-                NotificationManager.show(`❌ Röle kontrol hatası: ${error.message}`, 'error');
+                NotificationManager.show(`Röle kontrol hatası: ${error.message}`, 'error');
                 console.error('Relay brake error:', error);
             }
         });
@@ -673,16 +878,15 @@ class SystemController {
                 });
 
                 if (response.ok) {
-                    const data = await response.json();
                     systemState.brakeActive = (action === 'on');
                     
                     CommandLogger.log(`Software brake ${action === 'on' ? 'aktif' : 'pasif'}`, true);
-                    NotificationManager.show(`🔒 Software brake ${action === 'on' ? 'aktif' : 'pasif'}!`, 'success');
+                    NotificationManager.show(`Software brake ${action === 'on' ? 'aktif' : 'pasif'}!`, 'success');
                 }
 
             } catch (error) {
                 CommandLogger.log('Brake kontrol', false, error.message);
-                NotificationManager.show(`❌ Brake kontrol hatası: ${error.message}`, 'error');
+                NotificationManager.show(`Brake kontrol hatası: ${error.message}`, 'error');
                 console.error('Brake control error:', error);
             }
         });
@@ -690,7 +894,6 @@ class SystemController {
 
     static async emergencyStop() {
         try {
-            // Immediate local emergency actions
             systemState.armed = false;
             systemState.relayBrakeActive = false;
             systemState.brakeActive = true;
@@ -709,17 +912,16 @@ class SystemController {
             UIManager.updateArmButton();
             UIManager.updateRelayBrakeStatus();
 
-            // Send emergency stop to backend
             const response = await RequestHandler.makeRequest(`${BACKEND_URL}/api/emergency-stop`, {
                 method: 'POST'
             });
 
-            CommandLogger.log('ACİL DURDURMA AKTİF', true, 'Tüm sistemler durduruldu');
-            NotificationManager.show('🚨 ACİL DURDURMA! Tüm sistemler durduruldu!', 'error', 6000);
+            CommandLogger.log('ACİL DURDURMA AKTİF', true, `Tüm sistemler durduruldu - Temp: ${systemState.temperature.current.toFixed(1)}°C`);
+            NotificationManager.show('ACİL DURDURMA! Tüm sistemler durduruldu!', 'error', 6000);
 
         } catch (error) {
             CommandLogger.log('Acil durdurma', false, error.message);
-            NotificationManager.show('⚠️ Acil durdurma sinyali gönderilemedi!', 'warning');
+            NotificationManager.show('Acil durdurma sinyali gönderilemedi!', 'warning');
             console.error('Emergency stop error:', error);
         }
     }
@@ -736,16 +938,18 @@ class StatusManager {
             if (response.ok) {
                 const data = await response.json();
                 
-                // Update system state
                 systemState.armed = data.armed;
                 systemState.brakeActive = data.brake_active;
                 systemState.relayBrakeActive = data.relay_brake_active;
                 systemState.connected = data.connected;
                 
-                // Update motor states
-                Object.keys(data.motors).forEach(motorNum => {
+                if (data.temperature) {
+                    TemperatureManager.updateTemperatureDisplay(data.temperature);
+                }
+                
+                Object.keys(data.motors || {}).forEach(motorNum => {
                     const running = data.motors[motorNum];
-                    const speed = data.individual_speeds[motorNum] || 0;
+                    const speed = (data.individual_speeds && data.individual_speeds[motorNum]) || 0;
                     
                     systemState.motorStates[motorNum] = running;
                     systemState.individualMotorSpeeds[motorNum] = speed;
@@ -757,20 +961,17 @@ class StatusManager {
                     }
                 });
                 
-                // Update group speeds
-                systemState.groupSpeeds.levitation = data.group_speeds.levitation || 0;
-                systemState.groupSpeeds.thrust = data.group_speeds.thrust || 0;
+                systemState.groupSpeeds.levitation = (data.group_speeds && data.group_speeds.levitation) || 0;
+                systemState.groupSpeeds.thrust = (data.group_speeds && data.group_speeds.thrust) || 0;
                 UIManager.updateGroupSpeedDisplay('levitation', systemState.groupSpeeds.levitation);
                 UIManager.updateGroupSpeedDisplay('thrust', systemState.groupSpeeds.thrust);
                 
-                // Update UI elements
                 UIManager.updateMotorCount();
                 UIManager.updateArmButton();
                 UIManager.updateRelayBrakeStatus();
                 ConnectionManager.updateConnectionStatus('backend', true);
                 ConnectionManager.updateConnectionStatus('arduino', data.connected);
                 
-                // Update statistics
                 if (data.stats) {
                     UIManager.updateStatistics(data.stats);
                 }
@@ -799,7 +1000,6 @@ class StatusManager {
             this.pollStatus();
         }, CONFIG.STATUS_UPDATE_INTERVAL);
         
-        // Initial status check
         setTimeout(() => this.pollStatus(), 1000);
     }
 
@@ -861,7 +1061,6 @@ class UIManager {
             activeMotorsElement.textContent = `${activeCount}/6`;
         }
 
-        // Update average speeds
         const levSpeeds = [1,2,3,4].map(i => systemState.individualMotorSpeeds[i]).filter(s => s > 0);
         const thrSpeeds = [5,6].map(i => systemState.individualMotorSpeeds[i]).filter(s => s > 0);
         
@@ -879,30 +1078,24 @@ class UIManager {
             totalSpeedElement.textContent = `${totalAvg}%`;
         }
 
-        // Update simulated values
         this.updateSimulatedValues(activeCount);
     }
 
     static updateSimulatedValues(activeCount) {
-        // Update total RPM (simulated)
-        const totalRpm = activeCount * 1500 + Math.random() * 500;
+        const baseRpm = activeCount * 1500;
+        const tempEffect = Math.max(0, (systemState.temperature.current - 25) * 10);
+        const totalRpm = baseRpm + tempEffect + Math.random() * 500;
         const rpmElement = document.getElementById('total-rpm');
         if (rpmElement) {
             rpmElement.textContent = Math.round(totalRpm);
         }
 
-        // Update power usage (simulated)
-        const powerUsage = activeCount * 45 + Math.random() * 20;
+        const basePower = activeCount * 45;
+        const tempPowerEffect = Math.max(0, (systemState.temperature.current - 25) * 2);
+        const powerUsage = basePower + tempPowerEffect + Math.random() * 20;
         const powerElement = document.getElementById('power-usage');
         if (powerElement) {
             powerElement.textContent = `${Math.round(powerUsage)}W`;
-        }
-
-        // Update system temperature (simulated)
-        const baseTemp = 25 + (activeCount * 2) + (Math.random() * 5 - 2.5);
-        const tempElement = document.getElementById('system-temperature');
-        if (tempElement) {
-            tempElement.textContent = `${Math.round(baseTemp)}°C`;
         }
     }
 
@@ -912,10 +1105,10 @@ class UIManager {
         
         if (armButton) {
             if (systemState.armed) {
-                armButton.textContent = '🔒 SİSTEMİ DEVRE DIŞI BIRAK';
+                armButton.textContent = 'SİSTEMİ DEVRE DIŞI BIRAK';
                 armButton.className = 'arm-button armed';
             } else {
-                armButton.textContent = '🔧 SİSTEMİ HAZIRLA';
+                armButton.textContent = 'SİSTEMİ HAZIRLA';
                 armButton.className = 'arm-button';
             }
         }
@@ -972,7 +1165,7 @@ class UIManager {
     }
 }
 
-// Event Handlers - Global Functions (called from HTML)
+// Global Functions
 window.toggleArm = () => SystemController.toggleArm();
 window.startMotor = (motorNum) => MotorController.startMotor(motorNum);
 window.stopMotor = (motorNum) => MotorController.stopMotor(motorNum);
@@ -987,28 +1180,27 @@ window.emergencyStop = () => SystemController.emergencyStop();
 window.testConnection = () => ConnectionManager.testConnection();
 window.reconnectArduino = () => ConnectionManager.reconnectArduino();
 window.closeNotification = () => NotificationManager.hide();
+window.turnOffBuzzer = () => TemperatureManager.turnOffBuzzer();
 
 // Application Lifecycle
 class Application {
     static async initialize() {
-        console.log('🚀 SpectraLoop Frontend v3.2 - Production initializing...');
-        console.log('✅ Motor Groups: Levitation(1,2,3,4) Thrust(5,6)');
+        console.log('SpectraLoop Frontend v3.2 - Production with Temperature Safety initializing...');
+        console.log('Motor Groups: Levitation(1,2,3,4) Thrust(5,6)');
+        console.log('Temperature monitoring: DS18B20 on Pin8, Buzzer on Pin9');
         
         try {
             UIManager.showLoading(true);
             UIManager.setLoadingText('Sistem başlatılıyor...');
             
-            // Initialize UI state
             UIManager.updateArmButton();
             UIManager.updateRelayBrakeStatus();
             UIManager.updateMotorCount();
             
-            // Setup event listeners
             this.setupEventListeners();
             
             UIManager.setLoadingText('Backend bağlantısı test ediliyor...');
             
-            // Test initial connection
             try {
                 await ConnectionManager.testConnection();
             } catch (error) {
@@ -1017,24 +1209,21 @@ class Application {
             
             UIManager.setLoadingText('Status polling başlatılıyor...');
             
-            // Start status polling
             StatusManager.startStatusPolling();
             
-            // Log initialization
-            CommandLogger.log('Frontend başlatıldı', true, 'Production v3.2');
-            NotificationManager.show('🎯 SpectraLoop sistemi hazır! Motor grupları: Lev(1,2,3,4) Thr(5,6)', 'success');
+            CommandLogger.log('Frontend başlatıldı', true, 'Production v3.2 + Temperature Safety');
+            NotificationManager.show('SpectraLoop sistemi hazır! Sıcaklık güvenlik sistemi aktif', 'success');
             
             UIManager.showLoading(false);
             appState.isInitialized = true;
             
-            console.log('✅ Frontend initialization complete');
+            console.log('Frontend initialization complete with temperature monitoring');
             
         } catch (error) {
             console.error('Initialization error:', error);
             UIManager.setLoadingText('Başlatma hatası! Yeniden denenecek...');
             CommandLogger.log('Başlatma hatası', false, error.message);
             
-            // Retry initialization after delay
             setTimeout(() => {
                 this.initialize();
             }, 3000);
@@ -1042,42 +1231,43 @@ class Application {
     }
 
     static setupEventListeners() {
-        // Page visibility change handler
         document.addEventListener('visibilitychange', () => {
             if (document.visibilityState === 'visible' && appState.isInitialized) {
                 setTimeout(() => StatusManager.pollStatus(), 500);
             }
         });
 
-        // Keyboard shortcuts
         document.addEventListener('keydown', (event) => {
             if (event.ctrlKey) {
                 switch(event.key) {
-                    case ' ': // Ctrl+Space for emergency stop
+                    case ' ':
                         event.preventDefault();
                         SystemController.emergencyStop();
                         break;
-                    case 'a': // Ctrl+A for arm/disarm
+                    case 'a':
                         event.preventDefault();
                         SystemController.toggleArm();
                         break;
-                    case 't': // Ctrl+T for connection test
+                    case 't':
                         event.preventDefault();
                         ConnectionManager.testConnection();
                         break;
-                    case 'r': // Ctrl+R for relay toggle
+                    case 'r':
                         event.preventDefault();
                         SystemController.controlRelayBrake(systemState.relayBrakeActive ? 'off' : 'on');
                         break;
-                    case 'l': // Ctrl+L for clear log
+                    case 'l':
                         event.preventDefault();
                         CommandLogger.clear();
+                        break;
+                    case 'b':
+                        event.preventDefault();
+                        TemperatureManager.turnOffBuzzer();
                         break;
                 }
             }
         });
 
-        // Prevent page refresh with unsaved state
         window.addEventListener('beforeunload', (event) => {
             if (systemState.armed || Object.values(systemState.motorStates).some(state => state)) {
                 const message = 'Motorlar çalışıyor! Sayfayı kapatmak istediğinizden emin misiniz?';
@@ -1087,18 +1277,16 @@ class Application {
             }
         });
 
-        // Handle network status changes
         window.addEventListener('online', () => {
-            NotificationManager.show('🌐 İnternet bağlantısı yeniden kuruldu', 'success');
+            NotificationManager.show('İnternet bağlantısı yeniden kuruldu', 'success');
             setTimeout(() => StatusManager.pollStatus(), 1000);
         });
 
         window.addEventListener('offline', () => {
-            NotificationManager.show('🌐 İnternet bağlantısı kesildi', 'warning', 2000);
+            NotificationManager.show('İnternet bağlantısı kesildi', 'warning', 2000);
             ConnectionManager.updateConnectionStatus('backend', false);
         });
 
-        // Handle errors
         window.addEventListener('error', (event) => {
             console.error('Global error:', event.error);
             CommandLogger.log('JavaScript Hatası', false, event.error.message);
@@ -1109,41 +1297,34 @@ class Application {
             CommandLogger.log('Promise Hatası', false, event.reason.message || 'Unknown error');
         });
 
-        // Setup responsive handlers
         this.setupResponsiveHandlers();
     }
 
     static setupResponsiveHandlers() {
-        // Handle screen size changes
         const mediaQuery = window.matchMedia('(max-width: 900px)');
         
         const handleScreenChange = (e) => {
             if (e.matches) {
-                // Mobile layout adjustments
                 console.log('Switched to mobile layout');
             } else {
-                // Desktop layout
                 console.log('Switched to desktop layout');
             }
         };
 
         mediaQuery.addListener(handleScreenChange);
-        handleScreenChange(mediaQuery); // Initial check
+        handleScreenChange(mediaQuery);
     }
 
     static shutdown() {
-        console.log('🛑 Shutting down SpectraLoop Frontend...');
+        console.log('Shutting down SpectraLoop Frontend...');
         
         try {
-            // Stop status polling
             StatusManager.stopStatusPolling();
             
-            // Emergency stop if needed
             if (systemState.armed || Object.values(systemState.motorStates).some(state => state)) {
                 SystemController.emergencyStop();
             }
             
-            // Clear timeouts
             Object.keys(window).forEach(key => {
                 if (key.includes('Timeout')) {
                     clearTimeout(window[key]);
@@ -1151,7 +1332,7 @@ class Application {
             });
             
             CommandLogger.log('Frontend kapatıldı', true, 'Güvenli kapatma');
-            console.log('✅ Frontend shutdown complete');
+            console.log('Frontend shutdown complete');
             
         } catch (error) {
             console.error('Shutdown error:', error);
@@ -1162,17 +1343,15 @@ class Application {
 // Performance monitoring
 class PerformanceMonitor {
     static startMonitoring() {
-        // Monitor memory usage
         setInterval(() => {
             if (performance.memory) {
                 const memUsage = performance.memory.usedJSHeapSize / 1024 / 1024;
-                if (memUsage > 100) { // Over 100MB
+                if (memUsage > 100) {
                     console.warn(`High memory usage: ${memUsage.toFixed(2)} MB`);
                 }
             }
         }, 30000);
 
-        // Monitor request performance
         const originalFetch = window.fetch;
         window.fetch = async (...args) => {
             const start = performance.now();
@@ -1180,7 +1359,7 @@ class PerformanceMonitor {
                 const response = await originalFetch(...args);
                 const duration = performance.now() - start;
                 
-                if (duration > 5000) { // Over 5 seconds
+                if (duration > 5000) {
                     console.warn(`Slow request: ${args[0]} took ${duration.toFixed(2)}ms`);
                 }
                 
@@ -1194,18 +1373,17 @@ class PerformanceMonitor {
     }
 }
 
-// Start the application when DOM is ready
+// Initialize application
 document.addEventListener('DOMContentLoaded', () => {
     Application.initialize();
     PerformanceMonitor.startMonitoring();
 });
 
-// Handle page unload
 window.addEventListener('beforeunload', () => {
     Application.shutdown();
 });
 
-// Debug helpers (only in development)
+// Debug mode
 if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
     window.spectraDebug = {
         systemState,
@@ -1218,39 +1396,50 @@ if (window.location.hostname === 'localhost' || window.location.hostname === '12
         SystemController,
         StatusManager,
         UIManager,
-        Application
+        Application,
+        TemperatureManager
     };
     
-    console.log('🐛 Debug mode enabled. Use window.spectraDebug to access internals.');
+    console.log('Debug mode enabled. Use window.spectraDebug to access internals.');
 }
 
-// Console welcome message
+// Console info
 console.log(`
-🎛️ SpectraLoop Frontend v3.2 - Production
-🔧 Keyboard shortcuts:
+SpectraLoop Frontend v3.2 - Production with Temperature Safety
+Keyboard shortcuts:
    Ctrl+Space: Emergency Stop
    Ctrl+A: Arm/Disarm System  
    Ctrl+T: Test Connection
    Ctrl+R: Toggle Relay
    Ctrl+L: Clear Command Log
+   Ctrl+B: Turn Off Buzzer
 
-🔧 MOTOR GROUPS:
+MOTOR GROUPS:
    Levitation: Motors 1,2,3,4 (Pins 2,4,5,6)
    Thrust: Motors 5,6 (Pins 3,7)
 
-🎯 FEATURES:
-   ✅ Individual Motor Control
-   ✅ Group Motor Control
-   ✅ Software Brake Control  
-   ✅ Relay Brake Control
-   ✅ Arduino Reconnect Function
-   ✅ Emergency Stop System
-   ✅ Real-time Status Updates
-   ✅ Command Logging
-   ✅ Performance Monitoring
+TEMPERATURE SAFETY:
+   Sensor: DS18B20 on Pin 8
+   Buzzer: Pin 9 (Alarm notification)
+   Relay Brake: Pin 11 (Safety cutoff)
+   Thresholds: Safe <50°C, Warning 50-55°C, Alarm ≥55°C
+
+FEATURES:
+   Individual Motor Control
+   Group Motor Control
+   Software Brake Control  
+   Relay Brake Control
+   Arduino Reconnect Function
+   Emergency Stop System
+   Real-time Status Updates
+   Command Logging
+   Performance Monitoring
+   Temperature Safety System
+   Automatic Emergency Stop on Overheat
+   Visual Temperature Alerts
+   Buzzer Control
 `);
 
-// Production warning
 if (window.location.protocol === 'file:') {
-    console.warn('⚠️ Running from file:// protocol. For best results, serve from a web server.');
+    console.warn('Running from file:// protocol. For best results, serve from a web server.');
 }

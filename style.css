@@ -1,4 +1,4 @@
-/* SpectraLoop Frontend CSS v3.2 - Production */
+/* SpectraLoop Frontend CSS v3.2 - Production with Temperature Display */
 
 /* Reset and Base Styles */
 * {
@@ -74,6 +74,245 @@ body {
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;
+}
+
+/* Temperature Section Styles */
+.temperature-section {
+    background: linear-gradient(135deg, rgba(0, 212, 255, 0.1) 0%, rgba(0, 255, 136, 0.1) 100%);
+    border: 2px solid rgba(0, 212, 255, 0.3);
+    border-radius: 12px;
+    padding: 20px;
+    margin-bottom: 20px;
+    position: relative;
+    transition: all 0.3s ease;
+}
+
+.temperature-section.warning {
+    background: linear-gradient(135deg, rgba(255, 193, 7, 0.1) 0%, rgba(255, 215, 0, 0.1) 100%);
+    border-color: rgba(255, 193, 7, 0.5);
+}
+
+.temperature-section.danger {
+    background: linear-gradient(135deg, rgba(255, 71, 87, 0.1) 0%, rgba(255, 107, 107, 0.1) 100%);
+    border-color: rgba(255, 71, 87, 0.6);
+    animation: tempPulse 2s infinite;
+}
+
+@keyframes tempPulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.8; }
+}
+
+.temperature-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 15px;
+}
+
+.temperature-header h4 {
+    color: #00d4ff;
+    font-size: 1.1rem;
+    margin: 0;
+}
+
+.temp-emergency-indicator {
+    background: linear-gradient(45deg, #ff4757, #cc3647);
+    color: white;
+    padding: 5px 12px;
+    border-radius: 15px;
+    font-size: 0.8rem;
+    font-weight: bold;
+    animation: pulse 1s infinite;
+}
+
+.temperature-main {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 15px;
+}
+
+.temp-reading-container {
+    text-align: left;
+}
+
+.temp-current {
+    font-size: 2.5rem;
+    font-weight: bold;
+    color: #00ff88;
+    margin-bottom: 5px;
+    transition: color 0.3s ease;
+}
+
+.temp-current.warning {
+    color: #ffc107;
+}
+
+.temp-current.danger {
+    color: #ff4757;
+    animation: pulse 1.5s infinite;
+}
+
+.temp-status-text {
+    font-size: 0.9rem;
+    color: #aaa;
+    font-weight: 500;
+}
+
+.temp-details {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    text-align: right;
+}
+
+.temp-detail-item {
+    display: flex;
+    justify-content: space-between;
+    min-width: 120px;
+    font-size: 0.85rem;
+}
+
+.temp-label {
+    color: #aaa;
+}
+
+.temp-value {
+    color: #00d4ff;
+    font-weight: bold;
+}
+
+.temp-thresholds {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 8px;
+    margin-bottom: 15px;
+}
+
+.threshold-item {
+    text-align: center;
+    padding: 8px;
+    border-radius: 6px;
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    transition: all 0.3s ease;
+}
+
+.threshold-item:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.threshold-label {
+    font-size: 0.8rem;
+    color: #aaa;
+    margin-bottom: 3px;
+}
+
+.threshold-value {
+    font-weight: bold;
+    font-size: 0.85rem;
+}
+
+.threshold-item.safe .threshold-value {
+    color: #00ff88;
+}
+
+.threshold-item.warning .threshold-value {
+    color: #ffc107;
+}
+
+.threshold-item.danger .threshold-value {
+    color: #ff4757;
+}
+
+.temp-controls {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 10px;
+}
+
+.buzzer-btn {
+    background: linear-gradient(45deg, #ff4757, #cc3647);
+    color: white;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 20px;
+    font-size: 0.85rem;
+    font-weight: bold;
+    cursor: pointer;
+    transition: all 0.3s ease;
+}
+
+.buzzer-btn:hover:not(:disabled) {
+    background: linear-gradient(45deg, #ff5252, #d73847);
+    transform: translateY(-1px);
+}
+
+.buzzer-btn:disabled {
+    background: #666;
+    cursor: not-allowed;
+    transform: none;
+}
+
+.temp-last-update {
+    font-size: 0.75rem;
+    color: #aaa;
+}
+
+/* Temperature Emergency Warning */
+.temperature-emergency-warning {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: linear-gradient(135deg, rgba(255, 71, 87, 0.95), rgba(255, 107, 107, 0.95));
+    border: 3px solid #ff4757;
+    border-radius: 15px;
+    padding: 30px;
+    z-index: 2000;
+    backdrop-filter: blur(10px);
+    animation: emergencyPulse 1.5s infinite;
+    box-shadow: 0 0 50px rgba(255, 71, 87, 0.8);
+}
+
+.warning-content {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    text-align: left;
+}
+
+.warning-icon {
+    font-size: 3rem;
+    animation: shake 0.5s infinite;
+}
+
+@keyframes shake {
+    0%, 100% { transform: translateX(0); }
+    25% { transform: translateX(-5px); }
+    75% { transform: translateX(5px); }
+}
+
+.warning-title {
+    font-size: 1.8rem;
+    font-weight: bold;
+    color: white;
+    margin-bottom: 5px;
+}
+
+.warning-subtitle {
+    font-size: 1rem;
+    color: rgba(255, 255, 255, 0.9);
+    margin-bottom: 5px;
+}
+
+.warning-temp {
+    font-size: 1.2rem;
+    font-weight: bold;
+    color: #fff;
 }
 
 /* System Status */
@@ -887,6 +1126,42 @@ body {
     .speed-slider {
         min-width: 200px;
     }
+    
+    .temp-current {
+        font-size: 2rem;
+    }
+    
+    .temperature-main {
+        flex-direction: column;
+        gap: 15px;
+        text-align: center;
+    }
+    
+    .temp-details {
+        text-align: center;
+    }
+    
+    .temp-thresholds {
+        grid-template-columns: 1fr;
+        gap: 5px;
+    }
+    
+    .temperature-emergency-warning {
+        left: 10px;
+        right: 10px;
+        transform: translateY(-50%);
+        padding: 20px;
+    }
+    
+    .warning-content {
+        flex-direction: column;
+        text-align: center;
+        gap: 15px;
+    }
+    
+    .warning-title {
+        font-size: 1.5rem;
+    }
 }
 
 @media (max-width: 600px) {
@@ -916,6 +1191,12 @@ body {
         max-width: 280px;
         right: 10px;
     }
+    
+    .temp-controls {
+        flex-direction: column;
+        gap: 10px;
+        text-align: center;
+    }
 }
 
 /* High DPI Displays */
@@ -927,5 +1208,28 @@ body {
     
     .motor-btn, .group-btn, .system-btn {
         border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+}
+
+/* Temperature specific responsive adjustments */
+@media (max-width: 480px) {
+    .temp-current {
+        font-size: 1.8rem;
+    }
+    
+    .temperature-section {
+        padding: 15px;
+    }
+    
+    .temp-detail-item {
+        min-width: 100px;
+    }
+    
+    .warning-icon {
+        font-size: 2rem;
+    }
+    
+    .warning-title {
+        font-size: 1.2rem;
     }
 }
