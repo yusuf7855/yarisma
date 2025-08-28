@@ -335,35 +335,52 @@ class ProductionArduinoController:
     def _request_temperature_status(self):
         """Request temperature status from Arduino"""
         try:
+            logger.info("Requesting temperature status from Arduino...")  # INFO seviyesine çık
             success, response = self.send_command_sync("TEMP_STATUS", timeout=3.0)
+            
             if success and response:
+                logger.info(f"Temperature response received: {response}")  # INFO seviyesine çık
                 self._parse_temperature_response(response)
+            else:
+                logger.warning(f"Temperature request failed: {response}")  # WARNING seviyesine çık
+                
         except Exception as e:
-            logger.debug(f"Temperature request error: {e}")
+            logger.error(f"Temperature request error: {e}") # ERROR seviyesine çık
     
     def _parse_temperature_response(self, response):
-        """Parse temperature response from Arduino"""
+        """Parse temperature response from Arduino - Enhanced Debug"""
         try:
+            logger.info(f"Parsing temperature response: '{response}'")
             lines = response.split('\n')
             temp_data = {}
             
             for line in lines:
                 line = line.strip()
+                logger.debug(f"Processing line: '{line}'")
                 if ':' in line:
                     key, value = line.split(':', 1)
                     temp_data[key] = value
+                    logger.debug(f"Extracted: {key} = {value}")
+            
+            logger.info(f"Parsed temp_data: {temp_data}")
             
             # Update temperature data
             if 'Temperature' in temp_data:
                 try:
                     current_temp = float(temp_data['Temperature'])
+                    logger.info(f"Temperature value extracted: {current_temp}")
+                    
                     with state_lock:
+                        old_temp = temperature_data['current_temp']
                         temperature_data['current_temp'] = current_temp
                         temperature_data['last_temp_update'] = datetime.now()
+                        
+                        logger.info(f"Temperature updated: {old_temp} -> {current_temp}")
                         
                         # Update max temperature
                         if current_temp > temperature_data['max_temp_reached']:
                             temperature_data['max_temp_reached'] = current_temp
+                            logger.info(f"New max temperature: {current_temp}")
                         
                         # Add to temperature history
                         temperature_data['temp_history'].append({
@@ -380,6 +397,8 @@ class ProductionArduinoController:
                         temperature_data['temp_alarm'] = temp_data.get('TempAlarm', '0') == '1'
                         temperature_data['buzzer_active'] = temp_data.get('BuzzerActive', '0') == '1'
                         
+                        logger.info(f"Alarm status: {old_alarm} -> {temperature_data['temp_alarm']}")
+                        
                         # Log temperature alarm changes
                         if temperature_data['temp_alarm'] and not old_alarm:
                             temperature_data['alarm_start_time'] = datetime.now()
@@ -391,11 +410,67 @@ class ProductionArduinoController:
                             system_state['temperature_emergency'] = False
                             logger.info(f"Temperature returned to safe level: {current_temp}°C - Systems can be restarted")
                 
-                except ValueError:
-                    logger.debug("Invalid temperature value received")
+                except ValueError as ve:
+                    logger.error(f"Invalid temperature value '{temp_data['Temperature']}': {ve}")
+            else:
+                logger.warning("No 'Temperature' key found in response")
             
         except Exception as e:
-            logger.debug(f"Temperature parsing error: {e}")
+            logger.error(f"Temperature parsing error: {e}, response was: '{response}'")
+            """Parse temperature response from Arduino"""
+            try:
+                lines = response.split('\n')
+                temp_data = {}
+                
+                for line in lines:
+                    line = line.strip()
+                    if ':' in line:
+                        key, value = line.split(':', 1)
+                        temp_data[key] = value
+                
+                # Update temperature data
+                if 'Temperature' in temp_data:
+                    try:
+                        current_temp = float(temp_data['Temperature'])
+                        with state_lock:
+                            temperature_data['current_temp'] = current_temp
+                            temperature_data['last_temp_update'] = datetime.now()
+                            
+                            # Update max temperature
+                            if current_temp > temperature_data['max_temp_reached']:
+                                temperature_data['max_temp_reached'] = current_temp
+                            
+                            # Add to temperature history
+                            temperature_data['temp_history'].append({
+                                'timestamp': datetime.now().isoformat(),
+                                'temperature': current_temp
+                            })
+                            
+                            # Keep only last 100 readings
+                            if len(temperature_data['temp_history']) > MAX_TEMP_HISTORY:
+                                temperature_data['temp_history'] = temperature_data['temp_history'][-MAX_TEMP_HISTORY:]
+                            
+                            # Update alarm status
+                            old_alarm = temperature_data['temp_alarm']
+                            temperature_data['temp_alarm'] = temp_data.get('TempAlarm', '0') == '1'
+                            temperature_data['buzzer_active'] = temp_data.get('BuzzerActive', '0') == '1'
+                            
+                            # Log temperature alarm changes
+                            if temperature_data['temp_alarm'] and not old_alarm:
+                                temperature_data['alarm_start_time'] = datetime.now()
+                                temperature_data['alarm_count'] += 1
+                                system_state['temperature_emergency'] = True
+                                logger.warning(f"TEMPERATURE ALARM! Current: {current_temp}°C - Emergency procedures activated")
+                                
+                            elif not temperature_data['temp_alarm'] and old_alarm:
+                                system_state['temperature_emergency'] = False
+                                logger.info(f"Temperature returned to safe level: {current_temp}°C - Systems can be restarted")
+                    
+                    except ValueError:
+                        logger.debug("Invalid temperature value received")
+                
+            except Exception as e:
+                logger.debug(f"Temperature parsing error: {e}")
     
     def _command_processor(self):
         """Background command processor with error handling"""
