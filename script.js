@@ -5,7 +5,7 @@
  */
 
 // Configuration
-const BACKEND_URL = 'http://192.168.241.82:5001';
+const BACKEND_URL = 'http://192.168.9.101:5001';
 
 // System State Management - REFLECTOR DATA ADDED
 let systemState = {
