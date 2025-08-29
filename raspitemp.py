@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """
-SpectraLoop Motor Control Backend - FAULT TOLERANT DUAL TEMPERATURE + REFLECTOR v3.7
-FAULT TOLERANT: System works with 0, 1, or 2 temperature sensors
+SpectraLoop Motor Control Backend - DUAL TEMPERATURE + REFLECTOR COUNTER v3.6
 Dual DS18B20 sensors + buzzer + reflector counting + redundant safety system
-Individual + Group motor control + Fault tolerant temperature monitoring + Reflector tracking
+Individual + Group motor control + Dual temperature monitoring + Reflector tracking
 Motor Pin Mapping: İtki (3,7), Levitasyon (2,4,5,6)
-Temperature Sensors: Pin8->DS18B20#1, Pin13->DS18B20#2, Pin9->Buzzer, Pin11->RelayBrake
+Temperature Safety: Pin8->DS18B20#1, Pin13->DS18B20#2, Pin9->Buzzer, Pin11->RelayBrake
 Reflector Counter: PinA0->Omron Photoelectric, Pin12->Status LED
-FAULT TOLERANCE: Continues operation even with failed temperature sensors
+FIXED: No temperature alarm when sensors are disconnected
 """
 
 from flask import Flask, jsonify, request
@@ -39,7 +38,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('spectraloop_fault_tolerant.log'),
+        logging.FileHandler('spectraloop_dual_reflector.log'),
         logging.StreamHandler(sys.stdout)
     ]
 )
@@ -50,7 +49,7 @@ motor_states = {i: False for i in range(1, 7)}
 individual_motor_speeds = {i: 0 for i in range(1, 7)}
 group_speeds = {'levitation': 0, 'thrust': 0}
 
-# FAULT TOLERANT Temperature and safety system state - ENHANCED
+# DUAL Temperature and safety system state - ENHANCED WITH SENSOR DETECTION
 temperature_data = {
     'sensor1_temp': 25.0,           # Primary sensor (Pin 8)
     'sensor2_temp': 25.0,           # Secondary sensor (Pin 13)
@@ -64,21 +63,15 @@ temperature_data = {
     'max_temp_sensor2': 25.0,       # Individual max temps
     'alarm_start_time': None,
     'alarm_count': 0,
-    'sensor1_connected': False,     # Default: assume disconnected
-    'sensor2_connected': False,     # Default: assume disconnected
+    'sensor1_connected': False,      # BAŞLANGIÇTA FALSE - Arduino'dan gelecek
+    'sensor2_connected': False,      # BAŞLANGIÇTA FALSE - Arduino'dan gelecek
     'update_frequency': 0.0,
-    'sensor_failure_count': 0,      # Track sensor failures
-    'temp_monitoring_required': False,  # NEW: Is temperature monitoring required?
-    'allow_operation_without_temp': True,  # NEW: Allow operation without temperature sensors
-    'last_valid_temp1': 25.0,       # NEW: Last valid temperature reading
-    'last_valid_temp2': 25.0,       # NEW: Last valid temperature reading
-    'sensor1_fail_count': 0,        # NEW: Individual sensor failure counters
-    'sensor2_fail_count': 0,        # NEW: Individual sensor failure counters
-    'sensor_recovery_attempts': 0,   # NEW: Recovery attempts
-    'fault_tolerant_mode': True     # NEW: Operating in fault tolerant mode
+    'sensor_failure_count': 0,       # Track sensor failures
+    'sensors_detected': False,       # YENI: En az bir sensör var mı?
+    'monitoring_enabled': False      # YENI: Monitoring aktif mi?
 }
 
-# REFLECTOR COUNTER SYSTEM STATE - SAME AS BEFORE
+# REFLECTOR COUNTER SYSTEM STATE
 reflector_data = {
     'count': 0,                     # Total reflector count
     'voltage': 5.0,                 # Current sensor voltage
@@ -126,33 +119,29 @@ system_state = {
     'temperature_emergency': False,
     'dual_sensor_mode': True,       # Flag for dual sensor operation
     'reflector_system_enabled': True,  # Reflector system flag
-    'fault_tolerant_mode': True,    # NEW: Fault tolerant operation mode
-    'can_operate_without_temp': True  # NEW: Can operate without temperature sensors
+    'temperature_monitoring_required': False  # YENI: Sadece sensör varsa true
 }
 
 # Thread synchronization
 state_lock = threading.Lock()
 shutdown_event = threading.Event()
 
-# FAULT TOLERANT Temperature safety constants
+# Temperature safety constants - DUAL SENSOR
 TEMP_ALARM_THRESHOLD = 55.0
 TEMP_SAFE_THRESHOLD = 50.0
 TEMP_WARNING_THRESHOLD = 45.0
 MAX_TEMP_HISTORY = 200
-SENSOR_TIMEOUT = 30.0               # Consider sensor failed after 30 seconds
-MAX_TEMP_CHANGE = 50.0              # Maximum realistic temperature change
-TEMP_SENSOR_RETRY_INTERVAL = 10.0   # Retry sensor every 10 seconds
 
-# REFLECTOR SYSTEM Constants - SAME
-REFLECTOR_REPORT_INTERVAL = 1.0
-MAX_REFLECTOR_HISTORY = 500
-REFLECTOR_TIMEOUT = 30.0
+# REFLECTOR SYSTEM Constants
+REFLECTOR_REPORT_INTERVAL = 1.0     # Report reflector data every 1 second
+MAX_REFLECTOR_HISTORY = 500         # Keep max 500 speed measurements
+REFLECTOR_TIMEOUT = 30.0            # Consider system inactive after 30s
 
 # DUAL SENSOR Constants
-TEMP_DIFF_WARNING = 5.0
-TEMP_SENSOR_TIMEOUT = 10.0
+TEMP_DIFF_WARNING = 5.0  # Warn if sensors differ by more than 5°C
+TEMP_SENSOR_TIMEOUT = 10.0  # Consider sensor failed if no updates for 10s
 
-class FaultTolerantDualTempReflectorArduinoController:
+class DualTempReflectorArduinoController:
     def __init__(self, port=None, baudrate=115200):
         self.port = port or self.find_arduino_port()
         self.baudrate = baudrate
@@ -176,23 +165,21 @@ class FaultTolerantDualTempReflectorArduinoController:
         self.temp_stats_thread = None
         self.sensor_health_thread = None
         self.reflector_stats_thread = None
-        self.sensor_recovery_thread = None  # NEW: Sensor recovery thread
         
-        # FAULT TOLERANT Arduino stream parsing - ENHANCED
+        # DUAL SENSOR + REFLECTOR Arduino stream parsing - ENHANCED
         self.stream_buffer = ""
         self.temp1_pattern = re.compile(r'\[TEMP1:([\d.-]+)\]')
         self.temp2_pattern = re.compile(r'\[TEMP2:([\d.-]+)\]')
         self.max_temp_pattern = re.compile(r'\[MAX:([\d.-]+)\]')
         self.reflector_pattern = re.compile(r'\[REFLECTOR:([\d]+)\]')
-        self.dual_temp_pattern = re.compile(r'DUAL_TEMP \[TEMP1:([\d.-]+)\] \[TEMP2:([\d.-]+)\] \[MAX:([\d.-]+)\] \[S1_CONN:([01])\] \[S2_CONN:([01])\] \[TEMP_REQ:([01])\]')
+        self.dual_temp_pattern = re.compile(r'DUAL_TEMP \[TEMP1:([\d.-]+)\] \[TEMP2:([\d.-]+)\] \[MAX:([\d.-]+)\]')
         self.heartbeat_pattern = re.compile(r'HEARTBEAT:(\d+),(\d),(\d),(\d),([\d.-]+),(\d),(\d)')
         self.reflector_status_pattern = re.compile(r'REFLECTOR_STATUS \[COUNT:([\d]+)\] \[VOLTAGE:([\d.-]+)V\] \[STATE:(\w+)\] \[AVG_SPEED:([\d.-]+)rpm\] \[INST_SPEED:([\d.-]+)rpm\] \[read_FREQ:([\d.-]+)Hz\]')
         self.reflector_detected_pattern = re.compile(r'REFLECTOR_DETECTED:([\d]+) \[VOLTAGE:([\d.-]+)V\] \[SPEED:([\d.-]+)rpm\]')
         self.temp_alarm_pattern = re.compile(r'TEMP_ALARM:([\d.-]+)')
         self.temp_safe_pattern = re.compile(r'TEMP_SAFE:([\d.-]+)')
-        self.fault_tolerant_heartbeat_pattern = re.compile(r'HB_DUAL_FT \[TEMP1:([\d.-]+)\] \[TEMP2:([\d.-]+)\] \[MAX:([\d.-]+)\] \[S1_CONN:(\w+)\] \[S2_CONN:(\w+)\] \[TEMP_REQ:(\w+)\] \[REFLECTOR:([\d]+)\] \[REF_SPEED:([\d.-]+)\]')
         
-        # Performance tracking - FAULT TOLERANT
+        # Performance tracking - DUAL SENSOR + REFLECTOR
         self.temp_updates_count = 0
         self.reflector_updates_count = 0
         self.last_stats_time = time.time()
@@ -203,10 +190,7 @@ class FaultTolerantDualTempReflectorArduinoController:
             'reflector_updates': 0,
             'sensor1_last_seen': datetime.now(),
             'sensor2_last_seen': datetime.now(),
-            'reflector_last_seen': datetime.now(),
-            'sensor1_recovery_attempts': 0,  # NEW
-            'sensor2_recovery_attempts': 0,  # NEW
-            'last_recovery_attempt': datetime.now()  # NEW
+            'reflector_last_seen': datetime.now()
         }
         
         # Initialize connection safely
@@ -219,7 +203,6 @@ class FaultTolerantDualTempReflectorArduinoController:
                 self._start_temp_stats_monitor()
                 self._start_sensor_health_monitor()
                 self._start_reflector_stats_monitor()
-                self._start_sensor_recovery_monitor()  # NEW
             else:
                 logger.error("No Arduino port found")
                 system_state['connected'] = False
@@ -325,8 +308,7 @@ class FaultTolerantDualTempReflectorArduinoController:
                     self.reconnect_attempts = 0
                     system_state['connected'] = True
                     system_state['reflector_system_enabled'] = True
-                    system_state['fault_tolerant_mode'] = True
-                    logger.info("Arduino connection successful - FAULT TOLERANT DUAL TEMPERATURE + REFLECTOR safety system active")
+                    logger.info("Arduino connection successful - DUAL TEMPERATURE + REFLECTOR safety system active")
                     return True
                 else:
                     raise Exception("Connection test failed")
@@ -364,12 +346,8 @@ class FaultTolerantDualTempReflectorArduinoController:
                         data = self.connection.read(self.connection.in_waiting)
                         response += data.decode('utf-8', errors='ignore')
                         
-                        if any(keyword in response.upper() for keyword in ["PONG", "ACK", "FAULT-TOLERANT", "REFLECTOR", "READY"]):
+                        if any(keyword in response.upper() for keyword in ["PONG", "ACK", "DUAL-TEMP", "REFLECTOR", "READY"]):
                             logger.info(f"Arduino responded: {response.strip()}")
-                            # Check for fault tolerant mode indicator
-                            if "FAULT-TOLERANT" in response.upper():
-                                system_state['fault_tolerant_mode'] = True
-                                logger.info("Arduino is running in FAULT TOLERANT mode")
                             return True
                     except Exception as e:
                         logger.debug(f"Read error during test: {e}")
@@ -383,86 +361,35 @@ class FaultTolerantDualTempReflectorArduinoController:
             logger.error(f"Connection test error: {e}")
             return False
     
-    def _start_sensor_recovery_monitor(self):
-        """NEW: Start sensor recovery monitoring thread"""
-        if self.sensor_recovery_thread and self.sensor_recovery_thread.is_alive():
-            return
-        
-        self.sensor_recovery_thread = threading.Thread(target=self._sensor_recovery_monitor, daemon=True, name="SensorRecovery")
-        self.sensor_recovery_thread.start()
-        logger.info("Sensor recovery monitor started")
-    
-    def _sensor_recovery_monitor(self):
-        """NEW: Monitor and attempt to recover failed sensors"""
-        while not shutdown_event.is_set():
-            try:
-                current_time = datetime.now()
-                
-                with state_lock:
-                    # Check if we need to attempt sensor recovery
-                    time_since_last_attempt = (current_time - self.sensor_health_stats['last_recovery_attempt']).total_seconds()
-                    
-                    if time_since_last_attempt >= TEMP_SENSOR_RETRY_INTERVAL:
-                        recovery_needed = False
-                        
-                        # Check if sensor 1 needs recovery
-                        if not temperature_data['sensor1_connected']:
-                            recovery_needed = True
-                            self.sensor_health_stats['sensor1_recovery_attempts'] += 1
-                            logger.info(f"Attempting sensor 1 recovery (attempt {self.sensor_health_stats['sensor1_recovery_attempts']})")
-                        
-                        # Check if sensor 2 needs recovery
-                        if not temperature_data['sensor2_connected']:
-                            recovery_needed = True
-                            self.sensor_health_stats['sensor2_recovery_attempts'] += 1
-                            logger.info(f"Attempting sensor 2 recovery (attempt {self.sensor_health_stats['sensor2_recovery_attempts']})")
-                        
-                        if recovery_needed:
-                            self.sensor_health_stats['last_recovery_attempt'] = current_time
-                            # Send temperature status request to trigger sensor check
-                            if self.is_connected:
-                                try:
-                                    success, response = self.send_command_sync("TEMP_STATUS", timeout=3.0)
-                                    if success:
-                                        logger.debug("Sensor recovery check sent")
-                                except Exception as e:
-                                    logger.debug(f"Sensor recovery check failed: {e}")
-                
-                time.sleep(5)  # Check every 5 seconds
-                
-            except Exception as e:
-                logger.error(f"Sensor recovery monitor error: {e}")
-                time.sleep(10)
-    
     def _start_continuous_reader(self):
-        """FAULT TOLERANT continuous Arduino reading"""
+        """DUAL SENSOR + REFLECTOR: Ultra-fast continuous Arduino reading"""
         if self.continuous_reader_thread and self.continuous_reader_thread.is_alive():
             return
         
-        self.continuous_reader_thread = threading.Thread(target=self._continuous_reader, daemon=True, name="FaultTolerantReader")
+        self.continuous_reader_thread = threading.Thread(target=self._continuous_reader, daemon=True, name="DualTempReflectorReader")
         self.continuous_reader_thread.start()
-        logger.info("FAULT TOLERANT continuous reader started (25ms intervals)")
+        logger.info("DUAL TEMPERATURE + REFLECTOR continuous reader started (25ms intervals)")
     
     def _start_temp_stats_monitor(self):
         """Temperature + Reflector update frequency monitor"""
         if self.temp_stats_thread and self.temp_stats_thread.is_alive():
             return
         
-        self.temp_stats_thread = threading.Thread(target=self._temp_stats_monitor, daemon=True, name="FaultTolerantTempStats")
+        self.temp_stats_thread = threading.Thread(target=self._temp_stats_monitor, daemon=True, name="DualTempReflectorStats")
         self.temp_stats_thread.start()
-        logger.info("FAULT TOLERANT temperature + reflector statistics monitor started")
+        logger.info("DUAL temperature + reflector statistics monitor started")
     
     def _start_sensor_health_monitor(self):
-        """Monitor individual sensor + reflector health with fault tolerance"""
+        """Monitor individual sensor + reflector health"""
         if self.sensor_health_thread and self.sensor_health_thread.is_alive():
             return
         
-        self.sensor_health_thread = threading.Thread(target=self._sensor_health_monitor, daemon=True, name="FaultTolerantSensorHealth")
+        self.sensor_health_thread = threading.Thread(target=self._sensor_health_monitor, daemon=True, name="SensorReflectorHealth")
         self.sensor_health_thread.start()
-        logger.info("FAULT TOLERANT sensor + reflector health monitor started")
+        logger.info("Sensor + reflector health monitor started")
     
     def _start_reflector_stats_monitor(self):
-        """Monitor reflector statistics and trends - SAME"""
+        """Monitor reflector statistics and trends"""
         if self.reflector_stats_thread and self.reflector_stats_thread.is_alive():
             return
         
@@ -471,7 +398,7 @@ class FaultTolerantDualTempReflectorArduinoController:
         logger.info("Reflector statistics monitor started")
     
     def _reflector_stats_monitor(self):
-        """Monitor reflector performance and calculate statistics - SAME AS BEFORE"""
+        """Monitor reflector performance and calculate statistics"""
         while not shutdown_event.is_set():
             try:
                 current_time = datetime.now()
@@ -518,35 +445,33 @@ class FaultTolerantDualTempReflectorArduinoController:
                 time.sleep(5)
     
     def _sensor_health_monitor(self):
-        """FAULT TOLERANT sensor health monitoring"""
+        """Monitor individual sensor + reflector health and connection status"""
         while not shutdown_event.is_set():
             try:
                 current_time = datetime.now()
                 
                 with state_lock:
-                    # FAULT TOLERANT sensor 1 health check
+                    # Check sensor 1 health
                     sensor1_age = (current_time - self.sensor_health_stats['sensor1_last_seen']).total_seconds()
                     if sensor1_age > TEMP_SENSOR_TIMEOUT and temperature_data['sensor1_connected']:
                         temperature_data['sensor1_connected'] = False
-                        temperature_data['sensor1_fail_count'] += 1
                         temperature_data['sensor_failure_count'] += 1
                         logger.warning(f"Sensor 1 (Pin 8) appears disconnected - no data for {sensor1_age:.1f}s")
                     elif sensor1_age <= TEMP_SENSOR_TIMEOUT and not temperature_data['sensor1_connected']:
                         temperature_data['sensor1_connected'] = True
                         logger.info("Sensor 1 (Pin 8) reconnected")
                     
-                    # FAULT TOLERANT sensor 2 health check
+                    # Check sensor 2 health
                     sensor2_age = (current_time - self.sensor_health_stats['sensor2_last_seen']).total_seconds()
                     if sensor2_age > TEMP_SENSOR_TIMEOUT and temperature_data['sensor2_connected']:
                         temperature_data['sensor2_connected'] = False
-                        temperature_data['sensor2_fail_count'] += 1
                         temperature_data['sensor_failure_count'] += 1
                         logger.warning(f"Sensor 2 (Pin 13) appears disconnected - no data for {sensor2_age:.1f}s")
                     elif sensor2_age <= TEMP_SENSOR_TIMEOUT and not temperature_data['sensor2_connected']:
                         temperature_data['sensor2_connected'] = True
                         logger.info("Sensor 2 (Pin 13) reconnected")
                     
-                    # Check reflector system health - SAME
+                    # Check reflector system health
                     reflector_age = (current_time - self.sensor_health_stats['reflector_last_seen']).total_seconds()
                     if reflector_age > REFLECTOR_TIMEOUT and reflector_data['system_active']:
                         reflector_data['system_active'] = False
@@ -557,42 +482,38 @@ class FaultTolerantDualTempReflectorArduinoController:
                         system_state['reflector_system_enabled'] = True
                         logger.info("Reflector system reactivated")
                     
-                    # FAULT TOLERANT temperature difference check
+                    # YENI: Sensör durumunu güncelle ve monitoring'i kontrol et
+                    sensors_available = temperature_data['sensor1_connected'] or temperature_data['sensor2_connected']
+                    
+                    if sensors_available != temperature_data['sensors_detected']:
+                        temperature_data['sensors_detected'] = sensors_available
+                        system_state['temperature_monitoring_required'] = sensors_available
+                        
+                        if sensors_available:
+                            logger.info("Temperature sensors detected - monitoring enabled")
+                            temperature_data['monitoring_enabled'] = True
+                        else:
+                            logger.info("No temperature sensors - monitoring disabled")
+                            temperature_data['monitoring_enabled'] = False
+                            # Alarmları temizle
+                            temperature_data['temp_alarm'] = False
+                            temperature_data['buzzer_active'] = False
+                            system_state['temperature_emergency'] = False
+                    
+                    # Check temperature difference between sensors (only if both connected)
                     if temperature_data['sensor1_connected'] and temperature_data['sensor2_connected']:
                         temp_diff = abs(temperature_data['sensor1_temp'] - temperature_data['sensor2_temp'])
                         if temp_diff > TEMP_DIFF_WARNING:
                             logger.warning(f"Large temperature difference: S1={temperature_data['sensor1_temp']:.1f}°C, S2={temperature_data['sensor2_temp']:.1f}°C (Diff: {temp_diff:.1f}°C)")
-                    
-                    # Update temperature monitoring requirements - FAULT TOLERANT
-                    any_sensor_connected = temperature_data['sensor1_connected'] or temperature_data['sensor2_connected']
-                    
-                    if any_sensor_connected:
-                        temperature_data['temp_monitoring_required'] = True
-                        temperature_data['allow_operation_without_temp'] = False
-                        temperature_data['fault_tolerant_mode'] = True
-                        system_state['can_operate_without_temp'] = False
-                    else:
-                        # FAULT TOLERANCE: Allow operation without temperature sensors
-                        temperature_data['temp_monitoring_required'] = False
-                        temperature_data['allow_operation_without_temp'] = True
-                        temperature_data['fault_tolerant_mode'] = True
-                        system_state['can_operate_without_temp'] = True
-                        
-                        # Clear any temperature alarms if no sensors are connected
-                        if temperature_data['temp_alarm']:
-                            logger.info("FAULT TOLERANCE: Clearing temperature alarm - no sensors connected")
-                            temperature_data['temp_alarm'] = False
-                            temperature_data['buzzer_active'] = False
-                            system_state['temperature_emergency'] = False
                 
                 time.sleep(5)  # Check every 5 seconds
                 
             except Exception as e:
-                logger.error(f"FAULT TOLERANT sensor health monitor error: {e}")
+                logger.error(f"Sensor + reflector health monitor error: {e}")
                 time.sleep(5)
     
     def _temp_stats_monitor(self):
-        """Monitor temperature + reflector update frequency with fault tolerance"""
+        """Monitor temperature + reflector update frequency - NO WARNING IF NO SENSORS"""
         while not shutdown_event.is_set():
             try:
                 time.sleep(1.0)
@@ -608,11 +529,14 @@ class FaultTolerantDualTempReflectorArduinoController:
                         temperature_data['update_frequency'] = round(temp_updates_per_second, 2)
                         reflector_data['read_frequency'] = round(reflector_updates_per_second, 2)
                     
-                    if temp_updates_per_second > 0:
-                        logger.debug(f"FAULT TOLERANT temperature updates: {temp_updates_per_second:.2f} Hz")
-                    else:
-                        logger.debug("FAULT TOLERANCE: No temperature updates received")
+                    # SADECE SENSÖR VARSA ve veri gelmiyorsa uyar
+                    if temperature_data['sensors_detected']:
+                        if temp_updates_per_second > 0:
+                            logger.debug(f"Dual temperature updates: {temp_updates_per_second:.2f} Hz")
+                        else:
+                            logger.debug("No dual temperature updates received (sensors should be sending)")
                     
+                    # Reflector updates
                     if reflector_updates_per_second > 0:
                         logger.debug(f"Reflector updates: {reflector_updates_per_second:.2f} Hz")
                     
@@ -622,12 +546,12 @@ class FaultTolerantDualTempReflectorArduinoController:
                     self.last_stats_time = current_time
                 
             except Exception as e:
-                logger.error(f"FAULT TOLERANT temp + reflector stats monitor error: {e}")
+                logger.error(f"Dual temperature + reflector stats monitor error: {e}")
                 time.sleep(5)
     
     def _continuous_reader(self):
-        """FAULT TOLERANT Arduino stream reader"""
-        logger.info("FAULT TOLERANT continuous reader started")
+        """DUAL SENSOR + REFLECTOR: Ultra-fast Arduino stream reader"""
+        logger.info("DUAL TEMPERATURE + REFLECTOR continuous reader started")
         buffer = ""
         
         while not shutdown_event.is_set():
@@ -649,38 +573,60 @@ class FaultTolerantDualTempReflectorArduinoController:
                             line = line.strip()
                             
                             if line:
-                                self._parse_fault_tolerant_line(line)
+                                self._parse_dual_temp_reflector_line(line)
                     
                     except Exception as e:
-                        logger.debug(f"FAULT TOLERANT read error: {e}")
+                        logger.debug(f"Dual temp + reflector read error: {e}")
                 
                 time.sleep(0.025)  # 25ms polling
                 
             except Exception as e:
-                logger.error(f"FAULT TOLERANT reader error: {e}")
+                logger.error(f"Dual temperature + reflector reader error: {e}")
                 time.sleep(1)
         
-        logger.info("FAULT TOLERANT reader stopped")
+        logger.info("DUAL TEMPERATURE + REFLECTOR reader stopped")
     
-    def _parse_fault_tolerant_line(self, line):
-        """FAULT TOLERANT: Parse dual temperature + reflector Arduino lines"""
+    def _parse_dual_temp_reflector_line(self, line):
+        """ENHANCED: Parse dual temperature + reflector Arduino lines - SENSOR DETECTION ADDED"""
         try:
             current_time = datetime.now()
             
-            # 1. FAULT TOLERANT HEARTBEAT format: HB_DUAL_FT [TEMP1:33.45] [TEMP2:34.12] [MAX:34.12] [S1_CONN:OK] [S2_CONN:FAIL] [TEMP_REQ:YES] [REFLECTOR:123] [REF_SPEED:45.2]
-            ft_heartbeat_match = self.fault_tolerant_heartbeat_pattern.search(line)
-            if ft_heartbeat_match:
-                temp1, temp2, max_temp, s1_conn, s2_conn, temp_req, ref_count, ref_speed = ft_heartbeat_match.groups()
-                self._update_fault_tolerant_temperatures(float(temp1), float(temp2), float(max_temp), 
-                                                       s1_conn == "OK", s2_conn == "OK", temp_req == "YES")
-                self._update_reflector_count(int(ref_count))
-                with state_lock:
-                    reflector_data['average_speed'] = float(ref_speed)
-                self.temp_updates_count += 1
-                self.reflector_updates_count += 1
-                return
+            # 0. R: format parsing - R:count:voltage:instant_speed:avg_speed
+            if line.startswith("R:"):
+                try:
+                    parts = line.split(":")
+                    if len(parts) >= 5:  # R:count:voltage:instant_speed:avg_speed
+                        count = int(parts[1])
+                        voltage = float(parts[2])
+                        instant_speed = float(parts[3])
+                        avg_speed = float(parts[4])
+                        
+                        # Update reflector data
+                        with state_lock:
+                            reflector_data['count'] = count
+                            reflector_data['voltage'] = voltage
+                            reflector_data['instant_speed'] = instant_speed
+                            reflector_data['average_speed'] = avg_speed
+                            reflector_data['last_update'] = current_time
+                            reflector_data['system_active'] = True
+                            
+                            # Update session statistics
+                            reflector_data['statistics']['session_count'] = count
+                            reflector_data['statistics']['daily_count'] = count
+                            reflector_data['statistics']['total_count'] = count
+                            
+                            # Update health tracking
+                            self.sensor_health_stats['reflector_last_seen'] = current_time
+                            self.sensor_health_stats['reflector_updates'] += 1
+                        
+                        self.reflector_updates_count += 1
+                        logger.debug(f"R-format reflector update: Count={count}, Voltage={voltage:.2f}V, Speed={avg_speed:.1f}rpm")
+                        return
+                        
+                except (ValueError, IndexError) as e:
+                    logger.debug(f"Could not parse R: format line '{line}': {e}")
             
-            # 2. REFLECTOR_DETECTED format: REFLECTOR_DETECTED:123 [VOLTAGE:4.32V] [SPEED:45.2rpm]
+            # 1. REFLECTOR_DETECTED format: REFLECTOR_DETECTED:123 [VOLTAGE:4.32V] [SPEED:45.2rpm]
             reflector_detected_match = self.reflector_detected_pattern.search(line)
             if reflector_detected_match:
                 count, voltage, speed = reflector_detected_match.groups()
@@ -688,25 +634,24 @@ class FaultTolerantDualTempReflectorArduinoController:
                 self.reflector_updates_count += 1
                 return
             
-            # 3. REFLECTOR_STATUS format: REFLECTOR_STATUS [COUNT:123] [VOLTAGE:4.32V] [STATE:DETECTED] [AVG_SPEED:45.2rpm] [INST_SPEED:50.1rpm] [read_FREQ:200.0Hz]
+            # 2. REFLECTOR_STATUS format: REFLECTOR_STATUS [COUNT:123] [VOLTAGE:4.32V] [STATE:DETECTED] [AVG_SPEED:45.2rpm] [INST_SPEED:50.1rpm] [read_FREQ:200.0Hz]
             reflector_status_match = self.reflector_status_pattern.search(line)
             if reflector_status_match:
                 count, voltage, state, avg_speed, inst_speed, read_freq = reflector_status_match.groups()
                 self._update_reflector_status(int(count), float(voltage), state == "DETECTED", 
-                                           float(avg_speed), float(inst_speed), float(read_freq))
+                                        float(avg_speed), float(inst_speed), float(read_freq))
                 self.reflector_updates_count += 1
                 return
             
-            # 4. FAULT TOLERANT DUAL_TEMP format: DUAL_TEMP [TEMP1:33.45] [TEMP2:34.12] [MAX:34.12] [S1_CONN:1] [S2_CONN:0] [TEMP_REQ:1]
+            # 3. DUAL_TEMP format: DUAL_TEMP [TEMP1:33.45] [TEMP2:34.12] [MAX:34.12]
             dual_match = self.dual_temp_pattern.search(line)
             if dual_match:
-                temp1, temp2, max_temp, s1_conn, s2_conn, temp_req = dual_match.groups()
-                self._update_fault_tolerant_temperatures(float(temp1), float(temp2), float(max_temp),
-                                                       s1_conn == "1", s2_conn == "1", temp_req == "1")
+                temp1, temp2, max_temp = dual_match.groups()
+                self._update_dual_temperatures(float(temp1), float(temp2), float(max_temp))
                 self.temp_updates_count += 1
                 return
             
-            # 5. Individual temperature + reflector extractions from ACK messages
+            # 4. Individual temperature + reflector extractions from ACK messages
             temp1_match = self.temp1_pattern.search(line)
             temp2_match = self.temp2_pattern.search(line)
             max_match = self.max_temp_pattern.search(line)
@@ -714,14 +659,7 @@ class FaultTolerantDualTempReflectorArduinoController:
             
             if temp1_match and temp2_match and max_match:
                 temp1, temp2, max_temp = float(temp1_match.group(1)), float(temp2_match.group(1)), float(max_match.group(1))
-                # Check for TEMP_OK flag in ACK
-                temp_ok = "[TEMP_OK:1]" in line
-                if not temp_ok and "[TEMP_OK:0]" in line:
-                    temp_ok = False
-                else:
-                    temp_ok = True  # Default to OK if not specified
-                
-                self._update_fault_tolerant_temperatures(temp1, temp2, max_temp, True, True, temp_ok)
+                self._update_dual_temperatures(temp1, temp2, max_temp)
                 self.temp_updates_count += 1
                 
                 # Extract reflector count if present
@@ -732,7 +670,35 @@ class FaultTolerantDualTempReflectorArduinoController:
                 
                 return
             
-            # 6. Standard HEARTBEAT format with fault tolerance enhancement
+            # 5. HEARTBEAT with dual temperature + reflector
+            # HB_DUAL [TEMP1:33.45] [TEMP2:34.12] [MAX:34.12] [REFLECTOR:123] [REF_SPEED:45.2]
+            if "HB_DUAL" in line:
+                temp1_match = self.temp1_pattern.search(line)
+                temp2_match = self.temp2_pattern.search(line)
+                max_match = self.max_temp_pattern.search(line)
+                reflector_match = self.reflector_pattern.search(line)
+                ref_speed_match = re.search(r'\[REF_SPEED:([\d.-]+)\]', line)
+                
+                if temp1_match and temp2_match and max_match:
+                    temp1, temp2, max_temp = float(temp1_match.group(1)), float(temp2_match.group(1)), float(max_match.group(1))
+                    self._update_dual_temperatures(temp1, temp2, max_temp)
+                    self.temp_updates_count += 1
+                    
+                    # Update reflector data
+                    if reflector_match:
+                        reflector_count = int(reflector_match.group(1))
+                        self._update_reflector_count(reflector_count)
+                        
+                    if ref_speed_match:
+                        ref_speed = float(ref_speed_match.group(1))
+                        with state_lock:
+                            reflector_data['average_speed'] = ref_speed
+                        
+                        self.reflector_updates_count += 1
+                
+                return
+            
+            # 6. Standard HEARTBEAT format
             heartbeat_match = self.heartbeat_pattern.search(line)
             if heartbeat_match:
                 uptime, armed, brake_active, relay_brake_active, temp, temp_alarm, motor_count = heartbeat_match.groups()
@@ -743,14 +709,14 @@ class FaultTolerantDualTempReflectorArduinoController:
                     system_state['brake_active'] = bool(int(brake_active))
                     system_state['relay_brake_active'] = bool(int(relay_brake_active))
                     
-                    # Update max temp from heartbeat with fault tolerance
+                    # Update max temp from heartbeat
                     max_temp = float(temp)
-                    if temperature_data['temp_monitoring_required']:
-                        temperature_data['current_temp'] = max_temp
-                        temperature_data['last_temp_update'] = current_time
-                        
-                        # Update alarm status only if temperature monitoring is required
-                        temp_alarm_active = bool(int(temp_alarm))
+                    temperature_data['current_temp'] = max_temp
+                    temperature_data['last_temp_update'] = current_time
+                    
+                    # Update alarm status - SADECE SENSÖR VARSA
+                    temp_alarm_active = bool(int(temp_alarm))
+                    if temperature_data['monitoring_enabled']:
                         if temp_alarm_active != temperature_data['temp_alarm']:
                             temperature_data['temp_alarm'] = temp_alarm_active
                             if temp_alarm_active:
@@ -761,101 +727,107 @@ class FaultTolerantDualTempReflectorArduinoController:
                             else:
                                 system_state['temperature_emergency'] = False
                                 logger.info(f"Temperature alarm cleared via heartbeat - Max temp: {max_temp}°C")
-                    else:
-                        # FAULT TOLERANCE: Use fallback temperature
-                        temperature_data['current_temp'] = 25.0
-                        temperature_data['temp_alarm'] = False
-                        temperature_data['buzzer_active'] = False
-                        system_state['temperature_emergency'] = False
                 
-                logger.debug(f"FAULT TOLERANT Heartbeat: MaxTemp={max_temp}°C, Alarm={temp_alarm}, TempReq={temperature_data['temp_monitoring_required']}")
+                logger.debug(f"Heartbeat: MaxTemp={max_temp}°C, Alarm={temp_alarm_active}")
                 return
             
-            # 7. Temperature alarm messages with fault tolerance
-            if "TEMP_ALARM:" in line and temperature_data['temp_monitoring_required']:
-                try:
-                    temp_str = line.split("TEMP_ALARM:")[1].strip()
-                    temp_value = float(temp_str.split()[0])
-                    
-                    with state_lock:
-                        temperature_data['current_temp'] = max(temperature_data['current_temp'], temp_value)
-                        temperature_data['temp_alarm'] = True
-                        temperature_data['buzzer_active'] = True
-                        temperature_data['alarm_start_time'] = current_time
-                        temperature_data['alarm_count'] += 1
-                        system_state['temperature_emergency'] = True
-                        temperature_data['last_temp_update'] = current_time
-                    
-                    # Extract reflector count from alarm message
-                    reflector_match = self.reflector_pattern.search(line)
-                    if reflector_match:
-                        reflector_count = int(reflector_match.group(1))
-                        self._update_reflector_count(reflector_count)
-                    
-                    logger.warning(f"FAULT TOLERANT TEMP_ALARM detected! Max Temperature: {temp_value}°C, Reflector count: {reflector_data['count']}")
-                except ValueError as e:
-                    logger.debug(f"Could not parse TEMP_ALARM value: {e}")
+            # 7. Temperature alarm messages with reflector count - SADECE SENSÖR VARSA
+            if "TEMP_ALARM:" in line:
+                if temperature_data['monitoring_enabled']:  # YENI KONTROL
+                    try:
+                        temp_str = line.split("TEMP_ALARM:")[1].strip()
+                        temp_value = float(temp_str.split()[0])
+                        
+                        with state_lock:
+                            temperature_data['current_temp'] = max(temperature_data['current_temp'], temp_value)
+                            temperature_data['temp_alarm'] = True
+                            temperature_data['buzzer_active'] = True
+                            temperature_data['alarm_start_time'] = current_time
+                            temperature_data['alarm_count'] += 1
+                            system_state['temperature_emergency'] = True
+                            temperature_data['last_temp_update'] = current_time
+                        
+                        # Extract reflector count from alarm message
+                        reflector_match = self.reflector_pattern.search(line)
+                        if reflector_match:
+                            reflector_count = int(reflector_match.group(1))
+                            self._update_reflector_count(reflector_count)
+                        
+                        logger.warning(f"TEMP_ALARM detected! Max Temperature: {temp_value}°C, Reflector count: {reflector_data['count']}")
+                    except ValueError as e:
+                        logger.debug(f"Could not parse TEMP_ALARM value: {e}")
                 return
             
-            # 8. Temperature safe messages with fault tolerance
-            if "TEMP_SAFE:" in line and temperature_data['temp_monitoring_required']:
-                try:
-                    temp_str = line.split("TEMP_SAFE:")[1].strip()
-                    temp_value = float(temp_str.split()[0])
-                    
-                    with state_lock:
-                        temperature_data['current_temp'] = temp_value
-                        temperature_data['temp_alarm'] = False
-                        temperature_data['buzzer_active'] = False
-                        system_state['temperature_emergency'] = False
-                        temperature_data['last_temp_update'] = current_time
-                    
-                    # Extract reflector count from safe message
-                    reflector_match = self.reflector_pattern.search(line)
-                    if reflector_match:
-                        reflector_count = int(reflector_match.group(1))
-                        self._update_reflector_count(reflector_count)
-                    
-                    logger.info(f"FAULT TOLERANT TEMP_SAFE detected! Max Temperature: {temp_value}°C, Reflector count: {reflector_data['count']}")
-                except ValueError as e:
-                    logger.debug(f"Could not parse TEMP_SAFE value: {e}")
+            # 8. Temperature safe messages with reflector count - SADECE SENSÖR VARSA
+            if "TEMP_SAFE:" in line:
+                if temperature_data['monitoring_enabled']:  # YENI KONTROL
+                    try:
+                        temp_str = line.split("TEMP_SAFE:")[1].strip()
+                        temp_value = float(temp_str.split()[0])
+                        
+                        with state_lock:
+                            temperature_data['current_temp'] = temp_value
+                            temperature_data['temp_alarm'] = False
+                            temperature_data['buzzer_active'] = False
+                            system_state['temperature_emergency'] = False
+                            temperature_data['last_temp_update'] = current_time
+                        
+                        # Extract reflector count from safe message
+                        reflector_match = self.reflector_pattern.search(line)
+                        if reflector_match:
+                            reflector_count = int(reflector_match.group(1))
+                            self._update_reflector_count(reflector_count)
+                        
+                        logger.info(f"TEMP_SAFE detected! Max Temperature: {temp_value}°C, Reflector count: {reflector_data['count']}")
+                    except ValueError as e:
+                        logger.debug(f"Could not parse TEMP_SAFE value: {e}")
                 return
             
-            # 9. Sensor connection warnings with fault tolerance
+            # 9. Sensor connection warnings - Arduino'dan gelen bağlantı durumları
             if "WARNING:Sensor1_disconnected" in line:
                 with state_lock:
                     temperature_data['sensor1_connected'] = False
                     temperature_data['sensor_failure_count'] += 1
-                logger.warning("FAULT TOLERANT: Sensor 1 (Pin 8) disconnected!")
+                logger.warning("Sensor 1 (Pin 8) disconnected!")
                 return
             
             if "WARNING:Sensor2_disconnected" in line:
                 with state_lock:
                     temperature_data['sensor2_connected'] = False
                     temperature_data['sensor_failure_count'] += 1
-                logger.warning("FAULT TOLERANT: Sensor 2 (Pin 13) disconnected!")
+                logger.warning("Sensor 2 (Pin 13) disconnected!")
                 return
             
-            # 10. FAULT TOLERANCE status messages
-            if "FAULT TOLERANCE: Both sensors failed" in line:
+            # 10. Sensör CONNECTED mesajları - Arduino başlangıcında
+            if "Sensor 1 (Pin 8): CONNECTED" in line:
+                with state_lock:
+                    temperature_data['sensor1_connected'] = True
+                    temperature_data['sensors_detected'] = True
+                    temperature_data['monitoring_enabled'] = True
+                    system_state['temperature_monitoring_required'] = True
+                logger.info("Sensor 1 (Pin 8) detected and connected")
+                return
+            
+            if "Sensor 2 (Pin 13): CONNECTED" in line:
+                with state_lock:
+                    temperature_data['sensor2_connected'] = True
+                    temperature_data['sensors_detected'] = True
+                    temperature_data['monitoring_enabled'] = True
+                    system_state['temperature_monitoring_required'] = True
+                logger.info("Sensor 2 (Pin 13) detected and connected")
+                return
+            
+            # Sensör DISCONNECTED mesajları - Arduino başlangıcında
+            if "Sensor 1 (Pin 8): DISCONNECTED" in line:
                 with state_lock:
                     temperature_data['sensor1_connected'] = False
-                    temperature_data['sensor2_connected'] = False
-                    temperature_data['temp_monitoring_required'] = False
-                    temperature_data['allow_operation_without_temp'] = True
-                    system_state['can_operate_without_temp'] = True
-                    temperature_data['temp_alarm'] = False
-                    temperature_data['buzzer_active'] = False
-                    system_state['temperature_emergency'] = False
-                logger.warning("FAULT TOLERANCE: Both temperature sensors failed - temperature monitoring disabled")
+                logger.info("Sensor 1 (Pin 8) not detected")
                 return
             
-            if "Temperature monitoring RESTORED" in line:
+            if "Sensor 2 (Pin 13): DISCONNECTED" in line:
                 with state_lock:
-                    temperature_data['temp_monitoring_required'] = True
-                    temperature_data['allow_operation_without_temp'] = False
-                    system_state['can_operate_without_temp'] = False
-                logger.info("FAULT TOLERANCE: Temperature monitoring restored")
+                    temperature_data['sensor2_connected'] = False
+                logger.info("Sensor 2 (Pin 13) not detected")
                 return
             
             # 11. Emergency stop messages with reflector final count
@@ -866,110 +838,20 @@ class FaultTolerantDualTempReflectorArduinoController:
                     if final_match:
                         final_count = int(final_match.group(1))
                         self._update_reflector_count(final_count)
-                        logger.warning(f"FAULT TOLERANT Emergency stop - Final reflector count: {final_count}")
+                        logger.warning(f"Emergency stop - Final reflector count: {final_count}")
                 
-                logger.warning(f"FAULT TOLERANT Emergency stop detected: {line}")
+                logger.warning(f"Emergency stop detected: {line}")
                 return
             
             # 12. Other system messages - debug log only
             if line and not line.startswith("ACK:") and not "PONG" in line:
-                logger.debug(f"FAULT TOLERANT Arduino line: {line}")
+                logger.debug(f"Arduino line: {line}")
                 
         except Exception as e:
-            logger.error(f"FAULT TOLERANT line parsing error for '{line}': {e}")
-    
-    def _update_fault_tolerant_temperatures(self, temp1, temp2, max_temp, s1_connected, s2_connected, temp_required):
-        """FAULT TOLERANT: Update dual temperature data with enhanced fault tolerance"""
-        try:
-            current_time = datetime.now()
-            
-            with state_lock:
-                # Update individual sensor temperatures with fault tolerance
-                old_temp1 = temperature_data['sensor1_temp']
-                old_temp2 = temperature_data['sensor2_temp']
-                old_max = temperature_data['current_temp']
-                
-                # Validate temperature changes for realism
-                if abs(temp1 - old_temp1) <= MAX_TEMP_CHANGE:
-                    temperature_data['sensor1_temp'] = temp1
-                    temperature_data['last_valid_temp1'] = temp1
-                else:
-                    logger.warning(f"FAULT TOLERANT: Sensor 1 unrealistic temp change: {old_temp1} -> {temp1}")
-                
-                if abs(temp2 - old_temp2) <= MAX_TEMP_CHANGE:
-                    temperature_data['sensor2_temp'] = temp2
-                    temperature_data['last_valid_temp2'] = temp2
-                else:
-                    logger.warning(f"FAULT TOLERANT: Sensor 2 unrealistic temp change: {old_temp2} -> {temp2}")
-                
-                temperature_data['current_temp'] = max_temp
-                temperature_data['last_temp_update'] = current_time
-                
-                # Update connection status
-                temperature_data['sensor1_connected'] = s1_connected
-                temperature_data['sensor2_connected'] = s2_connected
-                
-                # Update temperature monitoring requirements
-                temperature_data['temp_monitoring_required'] = temp_required
-                temperature_data['allow_operation_without_temp'] = not temp_required
-                system_state['can_operate_without_temp'] = not temp_required
-                
-                # Update individual max temperatures
-                if s1_connected and temp1 > temperature_data['max_temp_sensor1']:
-                    temperature_data['max_temp_sensor1'] = temp1
-                if s2_connected and temp2 > temperature_data['max_temp_sensor2']:
-                    temperature_data['max_temp_sensor2'] = temp2
-                
-                # Update overall max temperature
-                if max_temp > temperature_data['max_temp_reached']:
-                    temperature_data['max_temp_reached'] = max_temp
-                
-                # Update sensor health tracking
-                if s1_connected:
-                    self.sensor_health_stats['sensor1_last_seen'] = current_time
-                    self.sensor_health_stats['sensor1_updates'] += 1
-                
-                if s2_connected:
-                    self.sensor_health_stats['sensor2_last_seen'] = current_time
-                    self.sensor_health_stats['sensor2_updates'] += 1
-                
-                self.sensor_health_stats['dual_updates'] += 1
-                
-                # Add to temperature history (limited frequency)
-                if len(temperature_data['temp_history']) == 0 or \
-                   (current_time - datetime.fromisoformat(temperature_data['temp_history'][-1]['timestamp'])).total_seconds() >= 0.5:
-                    temperature_data['temp_history'].append({
-                        'timestamp': current_time.isoformat(),
-                        'sensor1_temp': temp1,
-                        'sensor2_temp': temp2,
-                        'max_temp': max_temp,
-                        'sensor1_connected': s1_connected,
-                        'sensor2_connected': s2_connected,
-                        'temp_monitoring_required': temp_required
-                    })
-                    
-                    # Keep history limited
-                    if len(temperature_data['temp_history']) > MAX_TEMP_HISTORY:
-                        temperature_data['temp_history'] = temperature_data['temp_history'][-MAX_TEMP_HISTORY:]
-                
-                # Log significant changes
-                if abs(max_temp - old_max) > 0.5:
-                    sensor_status = f"S1:{'OK' if s1_connected else 'FAIL'} S2:{'OK' if s2_connected else 'FAIL'}"
-                    temp_req_status = "REQ" if temp_required else "BYPASS"
-                    logger.info(f"FAULT TOLERANT Temperature Update: S1={temp1:.1f}°C, S2={temp2:.1f}°C, Max={max_temp:.1f}°C [{sensor_status}] [{temp_req_status}]")
-                    
-                # Check for large sensor differences (only if both connected)
-                if s1_connected and s2_connected:
-                    temp_diff = abs(temp1 - temp2)
-                    if temp_diff > TEMP_DIFF_WARNING:
-                        logger.warning(f"FAULT TOLERANT: Large sensor difference: S1={temp1:.1f}°C, S2={temp2:.1f}°C (Diff: {temp_diff:.1f}°C)")
-                
-        except Exception as e:
-            logger.error(f"FAULT TOLERANT temperature update error: {e}")
-    
-    # Reflector functions remain the same
+            logger.error(f"Dual temp + reflector line parsing error for '{line}': {e}")
+
     def _update_reflector_detection(self, count, voltage, speed):
-        """Update reflector data when detection occurs - SAME AS BEFORE"""
+        """Update reflector data when detection occurs"""
         try:
             current_time = datetime.now()
             
@@ -998,7 +880,7 @@ class FaultTolerantDualTempReflectorArduinoController:
             logger.error(f"Reflector detection update error: {e}")
     
     def _update_reflector_status(self, count, voltage, state, avg_speed, inst_speed, read_freq):
-        """Update comprehensive reflector status - SAME AS BEFORE"""
+        """Update comprehensive reflector status"""
         try:
             current_time = datetime.now()
             
@@ -1022,7 +904,7 @@ class FaultTolerantDualTempReflectorArduinoController:
             logger.error(f"Reflector status update error: {e}")
     
     def _update_reflector_count(self, count):
-        """Simple reflector count update - SAME AS BEFORE"""
+        """Simple reflector count update"""
         try:
             current_time = datetime.now()
             
@@ -1047,9 +929,162 @@ class FaultTolerantDualTempReflectorArduinoController:
         except Exception as e:
             logger.error(f"Reflector count update error: {e}")
     
-    # Rest of the methods remain similar but with FAULT TOLERANT enhancements...
+    def _update_dual_temperatures(self, temp1, temp2, max_temp):
+        """Update dual temperature data with enhanced tracking - SENSOR DETECTION ADDED"""
+        try:
+            current_time = datetime.now()
+            
+            with state_lock:
+                # YENI: Sensör verisi geldiği için bağlı olarak işaretle
+                if temp1 > -50 and temp1 < 100:  # Geçerli sıcaklık değeri
+                    temperature_data['sensor1_connected'] = True
+                    temperature_data['sensors_detected'] = True
+                    temperature_data['monitoring_enabled'] = True
+                    system_state['temperature_monitoring_required'] = True
+                    
+                if temp2 > -50 and temp2 < 100:  # Geçerli sıcaklık değeri
+                    temperature_data['sensor2_connected'] = True
+                    temperature_data['sensors_detected'] = True
+                    temperature_data['monitoring_enabled'] = True
+                    system_state['temperature_monitoring_required'] = True
+                
+                # Update individual sensor temperatures
+                old_temp1 = temperature_data['sensor1_temp']
+                old_temp2 = temperature_data['sensor2_temp']
+                old_max = temperature_data['current_temp']
+                
+                temperature_data['sensor1_temp'] = temp1
+                temperature_data['sensor2_temp'] = temp2
+                temperature_data['current_temp'] = max_temp
+                temperature_data['last_temp_update'] = current_time
+                
+                # Update individual max temperatures
+                if temp1 > temperature_data['max_temp_sensor1']:
+                    temperature_data['max_temp_sensor1'] = temp1
+                if temp2 > temperature_data['max_temp_sensor2']:
+                    temperature_data['max_temp_sensor2'] = temp2
+                
+                # Update overall max temperature
+                if max_temp > temperature_data['max_temp_reached']:
+                    temperature_data['max_temp_reached'] = max_temp
+                
+                # Update sensor health tracking
+                self.sensor_health_stats['sensor1_last_seen'] = current_time
+                self.sensor_health_stats['sensor2_last_seen'] = current_time
+                self.sensor_health_stats['sensor1_updates'] += 1
+                self.sensor_health_stats['sensor2_updates'] += 1
+                self.sensor_health_stats['dual_updates'] += 1
+                
+                # Add to temperature history (limited frequency)
+                if len(temperature_data['temp_history']) == 0 or \
+                   (current_time - datetime.fromisoformat(temperature_data['temp_history'][-1]['timestamp'])).total_seconds() >= 0.5:
+                    temperature_data['temp_history'].append({
+                        'timestamp': current_time.isoformat(),
+                        'sensor1_temp': temp1,
+                        'sensor2_temp': temp2,
+                        'max_temp': max_temp
+                    })
+                    
+                    # Keep history limited
+                    if len(temperature_data['temp_history']) > MAX_TEMP_HISTORY:
+                        temperature_data['temp_history'] = temperature_data['temp_history'][-MAX_TEMP_HISTORY:]
+                
+                # Log significant changes
+                if abs(max_temp - old_max) > 0.5:
+                    logger.info(f"Dual Temperature Update: S1={temp1:.1f}°C, S2={temp2:.1f}°C, Max={max_temp:.1f}°C")
+                    
+                # Check for large sensor differences
+                temp_diff = abs(temp1 - temp2)
+                if temp_diff > TEMP_DIFF_WARNING:
+                    logger.warning(f"Large sensor difference: S1={temp1:.1f}°C, S2={temp2:.1f}°C (Diff: {temp_diff:.1f}°C)")
+                
+        except Exception as e:
+            logger.error(f"Dual temperature update error: {e}")
+    
+    def _start_command_processor(self):
+        """Start background command processor thread"""
+        if self.processor_thread and self.processor_thread.is_alive():
+            return
+        
+        self.processor_thread = threading.Thread(target=self._command_processor, daemon=True, name="CommandProcessor")
+        self.processor_thread.start()
+        logger.info("Command processor started")
+    
+    def _start_connection_monitor(self):
+        """Start background connection monitor thread"""
+        if self.monitor_thread and self.monitor_thread.is_alive():
+            return
+        
+        self.monitor_thread = threading.Thread(target=self._connection_monitor, daemon=True, name="ConnectionMonitor")
+        self.monitor_thread.start()
+        logger.info("Connection monitor started")
+    
+    def _command_processor(self):
+        """Background command processor with error handling"""
+        logger.info("Command processor thread started")
+        while not shutdown_event.is_set():
+            try:
+                if not self.command_queue.empty():
+                    try:
+                        command_data = self.command_queue.get(timeout=1)
+                        self._execute_command(command_data)
+                        self.command_queue.task_done()
+                    except queue.Empty:
+                        continue
+                else:
+                    time.sleep(0.05)
+                    
+            except Exception as e:
+                logger.error(f"Command processor error: {e}")
+                time.sleep(0.5)
+        
+        logger.info("Command processor thread stopped")
+    
+    def _connection_monitor(self):
+        """Background connection monitor"""
+        logger.info("Connection monitor thread started")
+        while not shutdown_event.is_set():
+            try:
+                if self.is_connected:
+                    # Send periodic heartbeat
+                    if time.time() - self.last_command_time > 60:
+                        success, _ = self.send_command_sync("PING", timeout=1.0)
+                        if not success:
+                            logger.warning("Heartbeat failed - connection may be lost")
+                            self.is_connected = False
+                            system_state['connected'] = False
+                            system_state['reflector_system_enabled'] = False
+                else:
+                    # Try to reconnect
+                    logger.info("Attempting automatic reconnection...")
+                    if self.connect():
+                        logger.info("Automatic reconnection successful")
+                        # Restart monitoring threads if needed
+                        self._restart_monitoring_threads()
+                    else:
+                        time.sleep(5)
+                
+                time.sleep(10)
+                
+            except Exception as e:
+                logger.error(f"Connection monitor error: {e}")
+                time.sleep(5)
+        
+        logger.info("Connection monitor thread stopped")
+    
+    def _restart_monitoring_threads(self):
+        """Restart monitoring threads after reconnection"""
+        if not self.continuous_reader_thread or not self.continuous_reader_thread.is_alive():
+            self._start_continuous_reader()
+        if not self.temp_stats_thread or not self.temp_stats_thread.is_alive():
+            self._start_temp_stats_monitor()
+        if not self.sensor_health_thread or not self.sensor_health_thread.is_alive():
+            self._start_sensor_health_monitor()
+        if not self.reflector_stats_thread or not self.reflector_stats_thread.is_alive():
+            self._start_reflector_stats_monitor()
+    
     def send_command_sync(self, command, timeout=3.0):
-        """Send command synchronously with timeout - SAME AS BEFORE"""
+        """Send command synchronously with timeout"""
         if not self.is_connected or not self.connection or shutdown_event.is_set():
             return False, "Not connected"
         
@@ -1084,8 +1119,7 @@ class FaultTolerantDualTempReflectorArduinoController:
                             completion_keywords = ["MOTOR_STARTED", "MOTOR_STOPPED", "LEV_GROUP_STARTED", 
                                                  "THR_GROUP_STARTED", "ARMED", "RELAY_BRAKE:", 
                                                  "PONG", "ACK:", "BRAKE_", "DISARMED", "EMERGENCY_STOP",
-                                                 "FAULT-TOLERANT", "TEMP_DUAL", "REFLECTOR_RESET", "REFLECTOR_FULL",
-                                                 "TEMP_BYPASS"]
+                                                 "DUAL-TEMP", "TEMP_DUAL", "REFLECTOR_RESET", "REFLECTOR_FULL"]
                             
                             if any(keyword in response for keyword in completion_keywords):
                                 break
@@ -1117,10 +1151,70 @@ class FaultTolerantDualTempReflectorArduinoController:
                 system_state['errors'] += 1
             return False, str(e)
     
-    # Rest of the controller methods remain the same but with fault tolerant logging...
+    def _execute_command(self, command_data):
+        """Execute command from queue with retry logic"""
+        if not self.is_connected or shutdown_event.is_set():
+            return
+        
+        command = command_data['command']
+        attempts = command_data.get('attempts', 0)
+        max_attempts = 2
+        
+        try:
+            success, response = self.send_command_sync(command, timeout=1.5)
+            
+            if success:
+                logger.debug(f"Command executed: {command}")
+            else:
+                if attempts < max_attempts:
+                    command_data['attempts'] = attempts + 1
+                    try:
+                        self.command_queue.put(command_data, timeout=0.05)
+                        logger.debug(f"Retrying command: {command}")
+                    except queue.Full:
+                        logger.warning(f"Queue full, dropping command: {command}")
+                else:
+                    logger.error(f"Command failed: {command}")
+                
+        except Exception as e:
+            logger.error(f"Command execution error: {e}")
+    
+    def reconnect(self):
+        """Manual reconnect with full reset"""
+        logger.info("Manual reconnection requested")
+        
+        old_connected = self.is_connected
+        self.is_connected = False
+        
+        try:
+            self.disconnect(keep_threads=True)
+            time.sleep(1)
+            
+            self.reconnect_attempts = 0
+            
+            new_port = self.find_arduino_port()
+            if new_port:
+                self.port = new_port
+                logger.info(f"Using port for reconnection: {self.port}")
+            
+            success = self.connect()
+            
+            if success:
+                # Restart all monitoring threads
+                self._restart_monitoring_threads()
+                logger.info("Manual reconnection successful")
+                return True
+            else:
+                logger.error("Manual reconnection failed")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Manual reconnection error: {e}")
+            return False
+    
     def disconnect(self, keep_threads=False):
         """Safely disconnect from Arduino"""
-        logger.info("Disconnecting FAULT TOLERANT Arduino...")
+        logger.info("Disconnecting Arduino...")
         
         self.is_connected = False
         system_state['connected'] = False
@@ -1157,29 +1251,28 @@ class FaultTolerantDualTempReflectorArduinoController:
                 (self.continuous_reader_thread, "ContinuousReader"),
                 (self.temp_stats_thread, "TempStatsMonitor"),
                 (self.sensor_health_thread, "SensorHealthMonitor"),
-                (self.reflector_stats_thread, "ReflectorStatsMonitor"),
-                (self.sensor_recovery_thread, "SensorRecoveryMonitor")  # NEW
+                (self.reflector_stats_thread, "ReflectorStatsMonitor")
             ]
             
             for thread, name in threads:
                 if thread and thread.is_alive():
                     thread.join(timeout=1.0)
         
-        logger.info("FAULT TOLERANT Arduino disconnected successfully")
+        logger.info("Arduino disconnected successfully")
 
-# Initialize FAULT TOLERANT Arduino controller
-logger.info("Initializing FAULT TOLERANT DUAL TEMPERATURE + REFLECTOR Arduino controller...")
+# Initialize DUAL TEMPERATURE + REFLECTOR Arduino controller
+logger.info("Initializing DUAL TEMPERATURE + REFLECTOR Arduino controller...")
 try:
-    arduino_controller = FaultTolerantDualTempReflectorArduinoController()
+    arduino_controller = DualTempReflectorArduinoController()
 except Exception as e:
-    logger.error(f"Failed to initialize FAULT TOLERANT Arduino controller: {e}")
+    logger.error(f"Failed to initialize Arduino controller: {e}")
     arduino_controller = None
 
-# Rest of the API routes remain mostly the same but with fault tolerant enhancements...
+# API Routes - DUAL TEMPERATURE + REFLECTOR ENHANCED
 
 @app.route('/api/status', methods=['GET'])
 def get_status():
-    """Get comprehensive system status including FAULT TOLERANT dual temperature + reflector data"""
+    """Get comprehensive system status including DUAL temperature + reflector data"""
     try:
         with state_lock:
             uptime_seconds = (datetime.now() - system_state['uptime']).total_seconds()
@@ -1213,17 +1306,29 @@ def get_status():
                     'sensor2_connected': temperature_data['sensor2_connected'],
                     'sensor_failure_count': temperature_data['sensor_failure_count'],
                     'dual_sensor_mode': system_state['dual_sensor_mode'],
-                    # FAULT TOLERANT fields
-                    'temp_monitoring_required': temperature_data['temp_monitoring_required'],
-                    'allow_operation_without_temp': temperature_data['allow_operation_without_temp'],
-                    'fault_tolerant_mode': temperature_data['fault_tolerant_mode'],
-                    'last_valid_temp1': temperature_data['last_valid_temp1'],
-                    'last_valid_temp2': temperature_data['last_valid_temp2'],
-                    'sensor1_fail_count': temperature_data['sensor1_fail_count'],
-                    'sensor2_fail_count': temperature_data['sensor2_fail_count'],
-                    'sensor_recovery_attempts': temperature_data['sensor_recovery_attempts']
+                    'monitoring_enabled': temperature_data['monitoring_enabled'],  # YENI
+                    'sensors_detected': temperature_data['sensors_detected']       # YENI
                 },
-                'reflector': reflector_data.copy(),  # Same as before
+                'reflector': {
+                    'count': reflector_data['count'],
+                    'voltage': reflector_data['voltage'],
+                    'state': reflector_data['state'],
+                    'average_speed': reflector_data['average_speed'],
+                    'instant_speed': reflector_data['instant_speed'],
+                    'last_update': reflector_data['last_update'].isoformat(),
+                    'system_active': reflector_data['system_active'],
+                    'detections': reflector_data['detections'],
+                    'read_frequency': reflector_data['read_frequency'],
+                    'calibration': reflector_data['calibration_data'],
+                    'performance': reflector_data['performance'],
+                    'statistics': {
+                        'session_count': reflector_data['statistics']['session_count'],
+                        'daily_count': reflector_data['statistics']['daily_count'],
+                        'total_count': reflector_data['statistics']['total_count'],
+                        'session_start': reflector_data['statistics']['session_start'].isoformat(),
+                        'daily_start': reflector_data['statistics']['daily_start'].isoformat()
+                    }
+                },
                 'stats': {
                     'commands': system_state['commands'],
                     'errors': system_state['errors'],
@@ -1231,24 +1336,67 @@ def get_status():
                     'last_response': system_state['last_response'].isoformat() if system_state['last_response'] else None,
                     'reconnect_attempts': arduino_controller.reconnect_attempts if arduino_controller else 0,
                     'reflector_system_enabled': system_state['reflector_system_enabled'],
-                    'fault_tolerant_mode': system_state['fault_tolerant_mode'],  # NEW
-                    'can_operate_without_temp': system_state['can_operate_without_temp']  # NEW
+                    'temperature_monitoring_required': system_state['temperature_monitoring_required']  # YENI
                 },
                 'port_info': {
                     'port': arduino_controller.port if arduino_controller else None,
                     'baudrate': arduino_controller.baudrate if arduino_controller else None
                 },
                 'timestamp': datetime.now().isoformat(),
-                'version': '3.7-FAULT-TOLERANT-DUAL-TEMPERATURE-REFLECTOR'
+                'version': '3.6-DUAL-TEMPERATURE-REFLECTOR-COMPLETE-FIXED'
             })
     except Exception as e:
         logger.error(f"Status endpoint error: {e}")
         return jsonify({'error': str(e), 'connected': False}), 500
 
-# NEW: Temperature bypass control routes
-@app.route('/api/temperature/bypass/enable', methods=['POST'])
-def enable_temperature_bypass():
-    """Enable operation without temperature sensors"""
+# REFLECTOR SYSTEM API ROUTES
+
+@app.route('/api/reflector', methods=['GET'])
+def get_reflector_data():
+    """Get detailed reflector system data"""
+    try:
+        with state_lock:
+            current_time = datetime.now()
+            last_update_age = (current_time - reflector_data['last_update']).total_seconds()
+            
+            return jsonify({
+                'count': reflector_data['count'],
+                'voltage': reflector_data['voltage'],
+                'state': reflector_data['state'],
+                'average_speed': reflector_data['average_speed'],
+                'instant_speed': reflector_data['instant_speed'],
+                'system_active': reflector_data['system_active'],
+                'detections': reflector_data['detections'],
+                'read_count': reflector_data['read_count'],
+                'read_frequency': reflector_data['read_frequency'],
+                'last_update': reflector_data['last_update'].isoformat(),
+                'last_update_age_seconds': last_update_age,
+                'calibration': reflector_data['calibration_data'],
+                'performance': {
+                    'total_runtime_minutes': reflector_data['performance']['total_runtime'],
+                    'detection_rate_per_minute': reflector_data['performance']['detection_rate'],
+                    'max_speed_recorded': reflector_data['performance']['max_speed_recorded'],
+                    'speed_history_count': len(reflector_data['performance']['speed_history']),
+                    'uptime_start': reflector_data['performance']['uptime_start'].isoformat()
+                },
+                'statistics': {
+                    'session_count': reflector_data['statistics']['session_count'],
+                    'daily_count': reflector_data['statistics']['daily_count'],
+                    'total_count': reflector_data['statistics']['total_count'],
+                    'session_duration_hours': (current_time - reflector_data['statistics']['session_start']).total_seconds() / 3600,
+                    'session_start': reflector_data['statistics']['session_start'].isoformat(),
+                    'daily_start': reflector_data['statistics']['daily_start'].isoformat()
+                },
+                'status': 'active' if reflector_data['system_active'] else 'inactive',
+                'timestamp': current_time.isoformat()
+            })
+    except Exception as e:
+        logger.error(f"Reflector data endpoint error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/reflector/reset', methods=['POST'])
+def reset_reflector_counter():
+    """Reset reflector counter"""
     if not arduino_controller or not arduino_controller.is_connected:
         return jsonify({
             'status': 'error',
@@ -1256,41 +1404,40 @@ def enable_temperature_bypass():
         }), 503
     
     try:
-        success, response = arduino_controller.send_command_sync("TEMP_BYPASS_ON", timeout=3.0)
+        success, response = arduino_controller.send_command_sync("REFLECTOR_RESET", timeout=3.0)
         
-        if success and "TEMP_BYPASS:ENABLED" in response:
+        if success and "REFLECTOR_RESET:SUCCESS" in response:
             with state_lock:
-                temperature_data['allow_operation_without_temp'] = True
-                temperature_data['temp_monitoring_required'] = False
-                temperature_data['temp_alarm'] = False
-                temperature_data['buzzer_active'] = False
-                system_state['temperature_emergency'] = False
-                system_state['can_operate_without_temp'] = True
+                reflector_data['count'] = 0
+                reflector_data['detections'] = 0
+                reflector_data['statistics']['session_count'] = 0
+                reflector_data['statistics']['session_start'] = datetime.now()
+                reflector_data['performance']['uptime_start'] = datetime.now()
+                reflector_data['performance']['speed_history'] = []
             
-            logger.info("FAULT TOLERANCE: Temperature bypass enabled - system will operate without temperature monitoring")
+            logger.info("Reflector counter reset successfully")
             return jsonify({
                 'status': 'success',
-                'message': 'Temperature bypass enabled - system will operate without temperature sensors',
-                'bypass_enabled': True,
-                'temp_monitoring_required': False,
-                'arduino_response': response
+                'message': 'Reflector counter reset successfully',
+                'arduino_response': response,
+                'reset_time': datetime.now().isoformat()
             })
         else:
             return jsonify({
                 'status': 'error',
-                'message': f'Could not enable temperature bypass: {response}'
+                'message': f'Reset failed: {response}'
             }), 500
             
     except Exception as e:
-        logger.error(f"Temperature bypass enable error: {e}")
+        logger.error(f"Reflector reset error: {e}")
         return jsonify({
             'status': 'error',
             'message': str(e)
         }), 500
 
-@app.route('/api/temperature/bypass/disable', methods=['POST'])
-def disable_temperature_bypass():
-    """Disable temperature bypass (if sensors are available)"""
+@app.route('/api/reflector/calibrate', methods=['POST'])
+def calibrate_reflector_sensor():
+    """Calibrate reflector sensor"""
     if not arduino_controller or not arduino_controller.is_connected:
         return jsonify({
             'status': 'error',
@@ -1298,48 +1445,87 @@ def disable_temperature_bypass():
         }), 503
     
     try:
-        success, response = arduino_controller.send_command_sync("TEMP_BYPASS_OFF", timeout=3.0)
+        success, response = arduino_controller.send_command_sync("REFLECTOR_CALIBRATE", timeout=5.0)
         
-        if success:
-            if "TEMP_BYPASS:DISABLED" in response:
-                with state_lock:
-                    temperature_data['temp_monitoring_required'] = True
-                    temperature_data['allow_operation_without_temp'] = False
-                    system_state['can_operate_without_temp'] = False
+        if success and "REFLECTOR_CALIBRATION:" in response:
+            # Parse calibration data
+            try:
+                cal_data = {}
+                parts = response.split("REFLECTOR_CALIBRATION:")[1].split(",")
+                for part in parts:
+                    if ":" in part:
+                        key, value = part.split(":", 1)
+                        try:
+                            cal_data[key] = float(value)
+                        except ValueError:
+                            cal_data[key] = value
                 
-                logger.info("FAULT TOLERANCE: Temperature monitoring restored")
+                with state_lock:
+                    reflector_data['calibration_data'].update({
+                        'min_voltage': cal_data.get('MIN_V', 0.0),
+                        'max_voltage': cal_data.get('MAX_V', 5.0),
+                        'avg_voltage': cal_data.get('AVG_V', 5.0),
+                        'detect_threshold': cal_data.get('DETECT_TH', 950) * 5.0 / 1023.0,
+                        'release_threshold': cal_data.get('RELEASE_TH', 1000) * 5.0 / 1023.0,
+                        'last_calibration': datetime.now().isoformat()
+                    })
+                
+                logger.info("Reflector sensor calibrated successfully")
                 return jsonify({
                     'status': 'success',
-                    'message': 'Temperature monitoring restored',
-                    'bypass_enabled': False,
-                    'temp_monitoring_required': True,
+                    'message': 'Reflector sensor calibrated successfully',
+                    'calibration_data': reflector_data['calibration_data'],
                     'arduino_response': response
                 })
-            elif "TEMP_BYPASS:CANNOT_DISABLE" in response:
+                
+            except Exception as parse_error:
+                logger.error(f"Calibration data parsing error: {parse_error}")
                 return jsonify({
-                    'status': 'warning',
-                    'message': 'Cannot disable temperature bypass - no temperature sensors available',
-                    'bypass_enabled': True,
-                    'temp_monitoring_required': False,
+                    'status': 'partial_success',
+                    'message': 'Calibration completed but data parsing failed',
                     'arduino_response': response
                 })
-        
-        return jsonify({
-            'status': 'error',
-            'message': f'Could not disable temperature bypass: {response}'
-        }), 500
+        else:
+            return jsonify({
+                'status': 'error',
+                'message': f'Calibration failed: {response}'
+            }), 500
             
     except Exception as e:
-        logger.error(f"Temperature bypass disable error: {e}")
+        logger.error(f"Reflector calibration error: {e}")
         return jsonify({
             'status': 'error',
             'message': str(e)
         }), 500
 
-# Enhanced temperature endpoint with fault tolerance
+@app.route('/api/reflector/realtime', methods=['GET'])
+def get_realtime_reflector():
+    """Ultra-fast reflector endpoint for real-time updates"""
+    try:
+        with state_lock:
+            current_time = datetime.now()
+            last_update_age = (current_time - reflector_data['last_update']).total_seconds()
+            
+            return jsonify({
+                'count': reflector_data['count'],
+                'voltage': reflector_data['voltage'],
+                'state': reflector_data['state'],
+                'average_speed': reflector_data['average_speed'],
+                'instant_speed': reflector_data['instant_speed'],
+                'read_frequency': reflector_data['read_frequency'],
+                'system_active': reflector_data['system_active'],
+                'last_update': reflector_data['last_update'].isoformat(),
+                'age_seconds': last_update_age,
+                'timestamp': current_time.isoformat(),
+                'status': 'real-time' if last_update_age < 2.0 else 'delayed'
+            })
+    except Exception as e:
+        logger.error(f"Realtime reflector error: {e}")
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/temperature', methods=['GET'])
 def get_temperature_data():
-    """Get detailed FAULT TOLERANT dual temperature data and history"""
+    """Get detailed DUAL temperature data and history with reflector correlation - FIXED FOR NO SENSORS"""
     try:
         with state_lock:
             current_time = datetime.now()
@@ -1380,34 +1566,20 @@ def get_temperature_data():
                     'sensor2_connected': temperature_data['sensor2_connected'],
                     'sensor_failure_count': temperature_data['sensor_failure_count'],
                     'both_sensors_active': temperature_data['sensor1_connected'] and temperature_data['sensor2_connected'],
-                    'any_sensor_active': temperature_data['sensor1_connected'] or temperature_data['sensor2_connected'],
+                    'sensors_detected': temperature_data['sensors_detected'],        # YENI
+                    'monitoring_enabled': temperature_data['monitoring_enabled'],    # YENI
                     'primary_sensor': 8,  # Pin number
-                    'secondary_sensor': 13,  # Pin number
-                    'sensor1_fail_count': temperature_data['sensor1_fail_count'],
-                    'sensor2_fail_count': temperature_data['sensor2_fail_count']
-                },
-                'fault_tolerance': {  # NEW: Fault tolerance status
-                    'fault_tolerant_mode': temperature_data['fault_tolerant_mode'],
-                    'temp_monitoring_required': temperature_data['temp_monitoring_required'],
-                    'allow_operation_without_temp': temperature_data['allow_operation_without_temp'],
-                    'can_operate_without_temp': system_state['can_operate_without_temp'],
-                    'last_valid_temp1': temperature_data['last_valid_temp1'],
-                    'last_valid_temp2': temperature_data['last_valid_temp2'],
-                    'sensor_recovery_attempts': temperature_data['sensor_recovery_attempts']
+                    'secondary_sensor': 13  # Pin number
                 },
                 'safety_status': {
                     'emergency_active': system_state['temperature_emergency'],
-                    'can_arm_system': (not temperature_data['temp_alarm'] and 
-                                     (not temperature_data['temp_monitoring_required'] or 
-                                      temperature_data['current_temp'] < TEMP_ALARM_THRESHOLD - 5)),
-                    'safe_to_operate': (not temperature_data['temp_monitoring_required'] or 
-                                      temperature_data['current_temp'] < TEMP_WARNING_THRESHOLD),
-                    'sensor_redundancy_ok': (temperature_data['sensor1_connected'] or 
-                                           temperature_data['sensor2_connected'] or 
-                                           temperature_data['allow_operation_without_temp']),
-                    'large_sensor_diff': temp_difference > TEMP_DIFF_WARNING
+                    'can_arm_system': not temperature_data['temp_alarm'] and temperature_data['current_temp'] < TEMP_ALARM_THRESHOLD - 5,
+                    'safe_to_operate': temperature_data['current_temp'] < TEMP_WARNING_THRESHOLD,
+                    'sensor_redundancy_ok': temperature_data['sensor1_connected'] or temperature_data['sensor2_connected'],
+                    'large_sensor_diff': temp_difference > TEMP_DIFF_WARNING,
+                    'monitoring_required': temperature_data['monitoring_enabled']    # YENI
                 },
-                'reflector_correlation': {  # Correlate temperature with reflector data
+                'reflector_correlation': {
                     'current_count': reflector_data['count'],
                     'current_speed': reflector_data['average_speed'],
                     'temp_vs_speed_ratio': reflector_data['average_speed'] / temperature_data['current_temp'] if temperature_data['current_temp'] > 0 else 0,
@@ -1421,50 +1593,141 @@ def get_temperature_data():
                     'status': 'real-time' if last_update_age < 2.0 else 'delayed',
                     'continuous_reader_alive': arduino_controller.continuous_reader_thread.is_alive() if arduino_controller and arduino_controller.continuous_reader_thread else False,
                     'sensor_health_alive': arduino_controller.sensor_health_thread.is_alive() if arduino_controller and arduino_controller.sensor_health_thread else False,
-                    'sensor_recovery_alive': arduino_controller.sensor_recovery_thread.is_alive() if arduino_controller and arduino_controller.sensor_recovery_thread else False,
-                    'optimization_level': 'fault-tolerant-dual-sensor-reflector'
+                    'reflector_stats_alive': arduino_controller.reflector_stats_thread.is_alive() if arduino_controller and arduino_controller.reflector_stats_thread else False,
+                    'optimization_level': 'dual-sensor-reflector-ultra-fast'
                 }
             })
     except Exception as e:
-        logger.error(f"FAULT TOLERANT temperature endpoint error: {e}")
+        logger.error(f"Temperature endpoint error: {e}")
         return jsonify({'error': str(e)}), 500
 
-# Enhanced system control routes with fault tolerance
+@app.route('/api/temperature/realtime', methods=['GET'])
+def get_realtime_temperature():
+    """Ultra-fast DUAL temperature endpoint with reflector data - FIXED FOR NO SENSORS"""
+    try:
+        with state_lock:
+            current_time = datetime.now()
+            last_update_age = (current_time - temperature_data['last_temp_update']).total_seconds()
+            temp_diff = abs(temperature_data['sensor1_temp'] - temperature_data['sensor2_temp']) if \
+                       temperature_data['sensor1_connected'] and temperature_data['sensor2_connected'] else 0
+            
+            return jsonify({
+                'temperature': temperature_data['current_temp'],
+                'sensor1_temp': temperature_data['sensor1_temp'],
+                'sensor2_temp': temperature_data['sensor2_temp'],
+                'temp_difference': temp_diff,
+                'alarm': temperature_data['temp_alarm'],
+                'buzzer': temperature_data['buzzer_active'],
+                'sensor1_connected': temperature_data['sensor1_connected'],
+                'sensor2_connected': temperature_data['sensor2_connected'],
+                'sensors_detected': temperature_data['sensors_detected'],        # YENI
+                'monitoring_enabled': temperature_data['monitoring_enabled'],    # YENI
+                'last_update': temperature_data['last_temp_update'].isoformat(),
+                'age_seconds': last_update_age,
+                'frequency_hz': temperature_data['update_frequency'],
+                'reflector_count': reflector_data['count'],
+                'reflector_speed': reflector_data['average_speed'],
+                'reflector_voltage': reflector_data['voltage'],
+                'timestamp': current_time.isoformat(),
+                'status': 'real-time' if last_update_age < 1.0 else 'delayed',
+                'dual_sensor_mode': True,
+                'reflector_system_active': reflector_data['system_active']
+            })
+    except Exception as e:
+        logger.error(f"Realtime temperature + reflector error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/temperature/buzzer/off', methods=['POST'])
+def turn_off_buzzer():
+    """Manuel buzzer kapatma - SADECE SENSÖR VARSA"""
+    if not arduino_controller or not arduino_controller.is_connected:
+        return jsonify({
+            'status': 'error',
+            'message': 'Arduino not connected'
+        }), 503
+    
+    # SADECE SENSÖR VARSA buzzer kontrolü yap
+    if not temperature_data['monitoring_enabled']:
+        return jsonify({
+            'status': 'success',
+            'message': 'No temperature sensors detected - buzzer control not needed',
+            'dual_temps': {
+                'sensor1': temperature_data['sensor1_temp'],
+                'sensor2': temperature_data['sensor2_temp'],
+                'max': temperature_data['current_temp']
+            },
+            'reflector_count': reflector_data['count']
+        })
+    
+    try:
+        success, response = arduino_controller.send_command_sync("BUZZER_OFF", timeout=3.0)
+        
+        if success and "BUZZER_OFF" in response:
+            with state_lock:
+                temperature_data['buzzer_active'] = False
+            
+            logger.info("Buzzer manually turned off")
+            return jsonify({
+                'status': 'success',
+                'message': 'Buzzer turned off',
+                'arduino_response': response,
+                'dual_temps': {
+                    'sensor1': temperature_data['sensor1_temp'],
+                    'sensor2': temperature_data['sensor2_temp'],
+                    'max': temperature_data['current_temp']
+                },
+                'reflector_count': reflector_data['count']
+            })
+        else:
+            return jsonify({
+                'status': 'error',
+                'message': f'Could not turn off buzzer: {response}'
+            }), 500
+            
+    except Exception as e:
+        logger.error(f"Buzzer off error: {e}")
+        return jsonify({
+            'status': 'error',
+            'message': str(e)
+        }), 500
+
+# ENHANCED SYSTEM CONTROL ROUTES WITH SENSOR DETECTION
+
 @app.route('/api/system/arm', methods=['POST'])
 def arm_system():
-    """Arm system - FAULT TOLERANT temperature + reflector safety checks"""
+    """Arm system - DUAL TEMPERATURE + REFLECTOR safety checks - FIXED FOR NO SENSORS"""
     if not arduino_controller or not arduino_controller.is_connected:
         return jsonify({'status': 'error', 'message': 'Arduino not connected'}), 503
     
-    # FAULT TOLERANT temperature safety checks
-    if temperature_data['temp_monitoring_required'] and temperature_data['temp_alarm']:
-        return jsonify({
-            'status': 'error',
-            'message': 'Cannot arm - temperature alarm active',
-            'dual_temperatures': {
-                'sensor1_temp': temperature_data['sensor1_temp'],
-                'sensor2_temp': temperature_data['sensor2_temp'],
-                'max_temp': temperature_data['current_temp'],
-                'alarm_active': temperature_data['temp_alarm'],
-                'temp_monitoring_required': temperature_data['temp_monitoring_required']
-            },
-            'reflector_status': {
-                'count': reflector_data['count'],
-                'system_active': reflector_data['system_active']
-            }
-        }), 400
-    
-    # FAULT TOLERANT: Check sensor requirements only if temperature monitoring is required
-    if temperature_data['temp_monitoring_required']:
-        if not temperature_data['sensor1_connected'] and not temperature_data['sensor2_connected']:
+    # SADECE SENSÖR VARSA sıcaklık kontrolü yap
+    if temperature_data['monitoring_enabled']:
+        if temperature_data['temp_alarm']:
             return jsonify({
                 'status': 'error',
-                'message': 'Cannot arm - no temperature sensors connected (temperature monitoring required)',
-                'sensor1_connected': temperature_data['sensor1_connected'],
-                'sensor2_connected': temperature_data['sensor2_connected'],
-                'fault_tolerance': {
-                    'can_bypass': temperature_data['allow_operation_without_temp'],
-                    'temp_monitoring_required': temperature_data['temp_monitoring_required']
+                'message': 'Cannot arm - temperature alarm active',
+                'dual_temperatures': {
+                    'sensor1_temp': temperature_data['sensor1_temp'],
+                    'sensor2_temp': temperature_data['sensor2_temp'],
+                    'max_temp': temperature_data['current_temp'],
+                    'alarm_active': temperature_data['temp_alarm']
+                },
+                'reflector_status': {
+                    'count': reflector_data['count'],
+                    'system_active': reflector_data['system_active']
+                }
+            }), 400
+        
+        # En yüksek sıcaklık kontrolü
+        max_temp = max(temperature_data['sensor1_temp'], temperature_data['sensor2_temp'])
+        if max_temp > TEMP_ALARM_THRESHOLD - 5:
+            return jsonify({
+                'status': 'error',
+                'message': f'Cannot arm - temperature too high ({max_temp:.1f}°C)',
+                'dual_temperatures': {
+                    'sensor1_temp': temperature_data['sensor1_temp'],
+                    'sensor2_temp': temperature_data['sensor2_temp'],
+                    'max_temp': temperature_data['current_temp'],
+                    'threshold': TEMP_ALARM_THRESHOLD - 5
                 }
             }), 400
     
@@ -1475,11 +1738,7 @@ def arm_system():
             with state_lock:
                 system_state['armed'] = True
             
-            # Log with fault tolerant status
-            temp_status = "MONITORED" if temperature_data['temp_monitoring_required'] else "BYPASSED"
-            sensor_status = f"S1:{'OK' if temperature_data['sensor1_connected'] else 'FAIL'} S2:{'OK' if temperature_data['sensor2_connected'] else 'FAIL'}"
-            
-            logger.info(f"FAULT TOLERANT System ARMED - Temps: S1={temperature_data['sensor1_temp']}°C, S2={temperature_data['sensor2_temp']}°C, Max={temperature_data['current_temp']}°C [{sensor_status}] [TEMP:{temp_status}], Reflector: {reflector_data['count']}")
+            logger.info(f"System ARMED - Dual Temps: S1={temperature_data['sensor1_temp']}°C, S2={temperature_data['sensor2_temp']}°C, Max={temperature_data['current_temp']}°C, Reflector: {reflector_data['count']}")
             
             return jsonify({
                 'status': 'armed',
@@ -1490,17 +1749,12 @@ def arm_system():
                     'max_temp': temperature_data['current_temp'],
                     'sensor1_connected': temperature_data['sensor1_connected'],
                     'sensor2_connected': temperature_data['sensor2_connected'],
-                    'temp_monitoring_required': temperature_data['temp_monitoring_required'],
-                    'allow_operation_without_temp': temperature_data['allow_operation_without_temp']
+                    'monitoring_enabled': temperature_data['monitoring_enabled']  # YENI
                 },
                 'reflector_status': {
                     'count': reflector_data['count'],
                     'average_speed': reflector_data['average_speed'],
                     'system_active': reflector_data['system_active']
-                },
-                'fault_tolerance': {
-                    'fault_tolerant_mode': temperature_data['fault_tolerant_mode'],
-                    'temperature_bypass_enabled': temperature_data['allow_operation_without_temp']
                 },
                 'arm_timestamp': datetime.now().isoformat()
             })
@@ -1508,12 +1762,12 @@ def arm_system():
             return jsonify({'status': 'error', 'message': f'Arduino error: {response}'}), 500
             
     except Exception as e:
-        logger.error(f"FAULT TOLERANT arm system error: {e}")
+        logger.error(f"Arm system error: {e}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 @app.route('/api/system/disarm', methods=['POST'])
 def disarm_system():
-    """Disarm the system with fault tolerant reflector logging"""
+    """Disarm the system with reflector logging"""
     if not arduino_controller or not arduino_controller.is_connected:
         return jsonify({'status': 'error', 'message': 'Arduino not connected'}), 503
     
@@ -1529,38 +1783,36 @@ def disarm_system():
                 group_speeds['levitation'] = 0
                 group_speeds['thrust'] = 0
             
-            logger.info("FAULT TOLERANT System DISARMED successfully")
+            logger.info("System DISARMED successfully")
             return jsonify({
                 'status': 'disarmed',
                 'message': 'System disarmed successfully',
                 'dual_temperatures': {
                     'sensor1_temp': temperature_data['sensor1_temp'],
                     'sensor2_temp': temperature_data['sensor2_temp'],
-                    'max_temp': temperature_data['current_temp'],
-                    'temp_monitoring_required': temperature_data['temp_monitoring_required']
+                    'max_temp': temperature_data['current_temp']
                 },
-                'reflector_final_count': reflector_data['count'],
-                'fault_tolerance': {
-                    'fault_tolerant_mode': temperature_data['fault_tolerant_mode']
-                }
+                'reflector_final_count': reflector_data['count']
             })
         else:
             return jsonify({'status': 'error', 'message': f'Arduino error: {response}'}), 500
             
     except Exception as e:
-        logger.error(f"FAULT TOLERANT disarm system error: {e}")
+        logger.error(f"Disarm system error: {e}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 @app.route('/api/emergency-stop', methods=['POST'])
 def emergency_stop():
-    """Emergency stop all systems with fault tolerant dual temperature + reflector logging"""
+    """Emergency stop all systems with dual temperature + reflector logging"""
     try:
         # Immediate local emergency actions
         with state_lock:
             system_state['armed'] = False
             system_state['brake_active'] = True
             system_state['relay_brake_active'] = False
-            system_state['temperature_emergency'] = True
+            # SADECE SENSÖR VARSA emergency flag'i set et
+            if temperature_data['monitoring_enabled']:
+                system_state['temperature_emergency'] = True
             for i in range(1, 7):
                 motor_states[i] = False
                 individual_motor_speeds[i] = 0
@@ -1578,11 +1830,7 @@ def emergency_stop():
             except Exception as e:
                 logger.warning(f"Could not send emergency stop to Arduino: {e}")
         
-        # Log with fault tolerant status
-        temp_status = "MONITORED" if temperature_data['temp_monitoring_required'] else "BYPASSED"
-        sensor_status = f"S1:{'OK' if temperature_data['sensor1_connected'] else 'FAIL'} S2:{'OK' if temperature_data['sensor2_connected'] else 'FAIL'}"
-        
-        logger.warning(f"FAULT TOLERANT EMERGENCY STOP ACTIVATED! Temps: S1={temperature_data['sensor1_temp']}°C, S2={temperature_data['sensor2_temp']}°C, Max={temperature_data['current_temp']}°C [{sensor_status}] [TEMP:{temp_status}], Reflector Final: {reflector_data['count']}")
+        logger.warning(f"EMERGENCY STOP ACTIVATED! Dual Temps: S1={temperature_data['sensor1_temp']}°C, S2={temperature_data['sensor2_temp']}°C, Max={temperature_data['current_temp']}°C, Reflector Final: {reflector_data['count']}")
         
         return jsonify({
             'status': 'emergency_stop',
@@ -1598,7 +1846,7 @@ def emergency_stop():
                 'sensor1_connected': temperature_data['sensor1_connected'],
                 'sensor2_connected': temperature_data['sensor2_connected'],
                 'temperature_alarm': temperature_data['temp_alarm'],
-                'temp_monitoring_required': temperature_data['temp_monitoring_required']
+                'monitoring_enabled': temperature_data['monitoring_enabled']  # YENI
             },
             'reflector_final_status': {
                 'final_count': reflector_data['count'],
@@ -1607,17 +1855,12 @@ def emergency_stop():
                 'session_duration_minutes': reflector_data['performance']['total_runtime'],
                 'system_was_active': reflector_data['system_active']
             },
-            'fault_tolerance': {
-                'fault_tolerant_mode': temperature_data['fault_tolerant_mode'],
-                'temperature_bypass_enabled': temperature_data['allow_operation_without_temp'],
-                'can_operate_without_temp': system_state['can_operate_without_temp']
-            },
             'arduino_response': arduino_response,
             'timestamp': datetime.now().isoformat()
         })
             
     except Exception as e:
-        logger.error(f"FAULT TOLERANT emergency stop error: {e}")
+        logger.error(f"Emergency stop error: {e}")
         return jsonify({
             'status': 'emergency_stop',
             'message': 'Emergency stop activated with error',
@@ -1628,16 +1871,100 @@ def emergency_stop():
                 'max_temp': temperature_data['current_temp']
             },
             'reflector_final_count': reflector_data['count'],
-            'fault_tolerance': {
-                'fault_tolerant_mode': temperature_data['fault_tolerant_mode']
-            },
             'timestamp': datetime.now().isoformat()
         })
 
-# Enhanced ping endpoint with fault tolerance status
+# MOTOR CONTROL ROUTES WITH ENHANCED SENSOR DETECTION
+
+@app.route('/api/motor/<int:motor_num>/start', methods=['POST'])
+def start_individual_motor(motor_num):
+    """Start individual motor with DUAL temperature + reflector safety checks - FIXED FOR NO SENSORS"""
+    if not arduino_controller or not arduino_controller.is_connected:
+        return jsonify({'status': 'error', 'message': 'Arduino not connected'}), 503
+    
+    # SADECE SENSÖR VARSA sıcaklık kontrolü yap
+    if temperature_data['monitoring_enabled']:
+        if temperature_data['temp_alarm']:
+            return jsonify({
+                'status': 'error', 
+                'message': 'Cannot start motor - temperature alarm active',
+                'dual_temperatures': {
+                    'sensor1_temp': temperature_data['sensor1_temp'],
+                    'sensor2_temp': temperature_data['sensor2_temp'],
+                    'max_temp': temperature_data['current_temp'],
+                    'alarm_active': temperature_data['temp_alarm']
+                }
+            }), 400
+        
+        if temperature_data['current_temp'] > TEMP_ALARM_THRESHOLD - 3:
+            return jsonify({
+                'status': 'error',
+                'message': f'Cannot start motor - temperature too high ({temperature_data["current_temp"]:.1f}°C)',
+                'dual_temperatures': {
+                    'sensor1_temp': temperature_data['sensor1_temp'],
+                    'sensor2_temp': temperature_data['sensor2_temp'],
+                    'max_temp': temperature_data['current_temp'],
+                    'threshold': TEMP_ALARM_THRESHOLD - 3
+                }
+            }), 400
+    
+    if motor_num not in range(1, 7):
+        return jsonify({'status': 'error', 'message': 'Invalid motor number (1-6)'}), 400
+    
+    try:
+        data = request.get_json() or {}
+        speed = int(data.get('speed', 50))
+        
+        if not 0 <= speed <= 100:
+            return jsonify({'status': 'error', 'message': 'Speed must be 0-100'}), 400
+        
+        command = f"MOTOR:{motor_num}:START:{speed}"
+        success, response = arduino_controller.send_command_sync(command, timeout=5.0)
+        
+        if success and "MOTOR_STARTED" in response:
+            with state_lock:
+                motor_states[motor_num] = True
+                individual_motor_speeds[motor_num] = speed
+            
+            motor_type = "Thrust" if motor_num in [5, 6] else "Levitation"
+            pin_mapping = {1: 2, 2: 4, 3: 5, 4: 6, 5: 3, 6: 7}
+            pin_num = pin_mapping.get(motor_num, "Unknown")
+            
+            logger.info(f"Motor {motor_num} ({motor_type}, Pin {pin_num}) started at {speed}% - Dual Temps: S1={temperature_data['sensor1_temp']:.1f}°C, S2={temperature_data['sensor2_temp']:.1f}°C, Reflector: {reflector_data['count']}")
+            return jsonify({
+                'status': 'success',
+                'motor': motor_num,
+                'action': 'start',
+                'speed': speed,
+                'type': motor_type,
+                'pin': pin_num,
+                'message': f'Motor {motor_num} started at {speed}%',
+                'dual_temperatures': {
+                    'sensor1_temp': temperature_data['sensor1_temp'],
+                    'sensor2_temp': temperature_data['sensor2_temp'],
+                    'max_temp': temperature_data['current_temp'],
+                    'sensor1_connected': temperature_data['sensor1_connected'],
+                    'sensor2_connected': temperature_data['sensor2_connected'],
+                    'monitoring_enabled': temperature_data['monitoring_enabled']  # YENI
+                },
+                'reflector_count': reflector_data['count'],
+                'arduino_response': response
+            })
+        else:
+            return jsonify({
+                'status': 'error',
+                'message': f'Motor start failed: {response}'
+            }), 500
+            
+    except ValueError:
+        return jsonify({'status': 'error', 'message': 'Invalid speed value'}), 400
+    except Exception as e:
+        logger.error(f"Motor {motor_num} start error: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
 @app.route('/api/ping', methods=['GET'])
 def ping():
-    """Ultra-fast health check with FAULT TOLERANT dual temperature + reflector info"""
+    """Ultra-fast health check with DUAL temperature + reflector info - FIXED FOR NO SENSORS"""
     try:
         with state_lock:
             temp_age = (datetime.now() - temperature_data['last_temp_update']).total_seconds()
@@ -1649,7 +1976,6 @@ def ping():
                 'status': 'ok',
                 'timestamp': datetime.now().isoformat(),
                 'arduino_connected': arduino_controller.is_connected if arduino_controller else False,
-                'fault_tolerant_mode': system_state['fault_tolerant_mode'],  # NEW
                 'dual_temperatures': {
                     'sensor1_temp': temperature_data['sensor1_temp'],
                     'sensor2_temp': temperature_data['sensor2_temp'],
@@ -1657,18 +1983,14 @@ def ping():
                     'temperature_difference': temp_diff,
                     'sensor1_connected': temperature_data['sensor1_connected'],
                     'sensor2_connected': temperature_data['sensor2_connected'],
+                    'sensors_detected': temperature_data['sensors_detected'],        # YENI
+                    'monitoring_enabled': temperature_data['monitoring_enabled'],    # YENI
                     'alarm': temperature_data['temp_alarm'],
                     'age_seconds': temp_age,
                     'frequency_hz': temperature_data['update_frequency'],
-                    'status': 'real-time' if temp_age < 1.0 else 'delayed',
-                    # FAULT TOLERANT fields
-                    'temp_monitoring_required': temperature_data['temp_monitoring_required'],
-                    'allow_operation_without_temp': temperature_data['allow_operation_without_temp'],
-                    'fault_tolerant_mode': temperature_data['fault_tolerant_mode'],
-                    'sensor1_fail_count': temperature_data['sensor1_fail_count'],
-                    'sensor2_fail_count': temperature_data['sensor2_fail_count']
+                    'status': 'real-time' if temp_age < 1.0 else 'delayed'
                 },
-                'reflector_system': {  # Reflector system health
+                'reflector_system': {
                     'count': reflector_data['count'],
                     'voltage': reflector_data['voltage'],
                     'average_speed': reflector_data['average_speed'],
@@ -1683,24 +2005,47 @@ def ping():
                     'temp_stats_monitor': arduino_controller.temp_stats_thread.is_alive() if arduino_controller and arduino_controller.temp_stats_thread else False,
                     'sensor_health_monitor': arduino_controller.sensor_health_thread.is_alive() if arduino_controller and arduino_controller.sensor_health_thread else False,
                     'reflector_stats_monitor': arduino_controller.reflector_stats_thread.is_alive() if arduino_controller and arduino_controller.reflector_stats_thread else False,
-                    'sensor_recovery_monitor': arduino_controller.sensor_recovery_thread.is_alive() if arduino_controller and arduino_controller.sensor_recovery_thread else False,  # NEW
-                    'optimization': 'fault-tolerant-dual-sensor-reflector'
+                    'optimization': 'dual-sensor-reflector-ultra-fast'
                 },
                 'system_status': {
                     'armed': system_state['armed'],
                     'temperature_emergency': system_state['temperature_emergency'],
                     'reflector_system_enabled': system_state['reflector_system_enabled'],
-                    'can_operate_without_temp': system_state['can_operate_without_temp']  # NEW
+                    'temperature_monitoring_required': system_state['temperature_monitoring_required']  # YENI
                 },
-                'version': '3.7-FAULT-TOLERANT-DUAL-TEMPERATURE-REFLECTOR',
+                'version': '3.6-DUAL-TEMPERATURE-REFLECTOR-FIXED',
                 'port': arduino_controller.port if arduino_controller else None
             })
         
     except Exception as e:
-        logger.error(f"FAULT TOLERANT ping error: {e}")
+        logger.error(f"Ping error: {e}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
-# Enhanced error handlers with fault tolerance info
+@app.route('/api/reconnect', methods=['POST'])
+def reconnect_arduino():
+    """Reconnect to Arduino"""
+    if not arduino_controller:
+        return jsonify({'status': 'error', 'message': 'No Arduino controller available'}), 500
+    
+    try:
+        success = arduino_controller.reconnect()
+        if success:
+            return jsonify({
+                'status': 'success',
+                'message': 'Arduino reconnected successfully',
+                'port': arduino_controller.port,
+                'timestamp': datetime.now().isoformat()
+            })
+        else:
+            return jsonify({
+                'status': 'error',
+                'message': 'Failed to reconnect to Arduino'
+            }), 500
+    except Exception as e:
+        logger.error(f"Reconnect error: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+# Error Handlers
 @app.errorhandler(404)
 def not_found(error):
     return jsonify({
@@ -1710,34 +2055,24 @@ def not_found(error):
             'GET /api/status',
             'GET /api/temperature',
             'GET /api/temperature/realtime',
-            'POST /api/temperature/bypass/enable',   # NEW
-            'POST /api/temperature/bypass/disable',  # NEW
             'GET /api/reflector',
             'GET /api/reflector/realtime',
-            'GET /api/reflector/statistics',
             'POST /api/reflector/reset',
             'POST /api/reflector/calibrate',
             'GET /api/ping',
             'POST /api/system/arm',
             'POST /api/system/disarm',
             'POST /api/motor/<num>/start',
-            'POST /api/emergency-stop'
-        ],
-        'fault_tolerant_features': [  # NEW
-            'Works with 0, 1, or 2 temperature sensors',
-            'Automatic sensor failure detection',
-            'Sensor recovery attempts',
-            'Temperature monitoring bypass',
-            'Fallback temperature values',
-            'Enhanced safety with fault tolerance',
-            'Operation continuity without sensors'
+            'POST /api/emergency-stop',
+            'POST /api/reconnect'
         ],
         'dual_sensor_features': [
             'Individual sensor temperatures',
             'Redundant safety monitoring',
             'Sensor health tracking',
             'Temperature difference warnings',
-            'Automatic failover capability'
+            'Automatic failover capability',
+            'No alarm when sensors disconnected'  # YENI
         ],
         'reflector_features': [
             'Ultra-fast reflector counting (5ms)',
@@ -1750,10 +2085,10 @@ def not_found(error):
         ]
     }), 404
 
-# Background monitoring - FAULT TOLERANT ENHANCED
-def fault_tolerant_background_monitor():
-    """FAULT TOLERANT background monitoring and maintenance"""
-    logger.info("FAULT TOLERANT background monitor started")
+# Background monitoring
+def dual_temp_reflector_background_monitor():
+    """DUAL TEMPERATURE + REFLECTOR background monitoring and maintenance - FIXED FOR NO SENSORS"""
+    logger.info("DUAL TEMPERATURE + REFLECTOR background monitor started")
     
     while not shutdown_event.is_set():
         try:
@@ -1764,48 +2099,39 @@ def fault_tolerant_background_monitor():
                     if arduino_controller.reconnect():
                         logger.info("Auto-reconnection successful")
             
-            # FAULT TOLERANT monitoring logic
+            # Monitoring logic - SADECE SENSÖR VARSA UYAR
             with state_lock:
                 temp_age = (datetime.now() - temperature_data['last_temp_update']).total_seconds()
                 reflector_age = (datetime.now() - reflector_data['last_update']).total_seconds()
                 
-                # Temperature monitoring with fault tolerance
-                if temp_age > 10 and temperature_data['temp_monitoring_required']:
-                    logger.warning(f"FAULT TOLERANT: Temperature data is stale: {temp_age:.1f}s old")
+                # SADECE SENSÖR VARSA ve veri eski ise uyar
+                if temperature_data['monitoring_enabled'] and temp_age > 10:
+                    logger.warning(f"Dual temperature data is stale: {temp_age:.1f}s old")
                     if arduino_controller and arduino_controller.is_connected:
                         arduino_controller._restart_monitoring_threads()
-                elif temp_age > 30 and not temperature_data['temp_monitoring_required']:
-                    logger.info(f"FAULT TOLERANT: Temperature data stale ({temp_age:.1f}s) but monitoring not required")
                 
-                # Reflector monitoring - same as before
+                # Reflector monitoring
                 if reflector_age > REFLECTOR_TIMEOUT and reflector_data['system_active']:
                     logger.warning(f"Reflector system inactive: {reflector_age:.1f}s since last update")
                     reflector_data['system_active'] = False
                     system_state['reflector_system_enabled'] = False
-                
-                # FAULT TOLERANT: Check if we can enable temperature bypass automatically
-                if not temperature_data['sensor1_connected'] and not temperature_data['sensor2_connected']:
-                    if temperature_data['temp_monitoring_required'] and not temperature_data['allow_operation_without_temp']:
-                        logger.info("FAULT TOLERANT: Both sensors failed, considering automatic temperature bypass")
-                        # Don't auto-enable bypass, but log the capability
-                        logger.info("FAULT TOLERANT: Temperature bypass available if needed")
             
             shutdown_event.wait(5)
             
         except Exception as e:
-            logger.error(f"FAULT TOLERANT background monitor error: {e}")
+            logger.error(f"Dual temperature + reflector background monitor error: {e}")
             shutdown_event.wait(5)
     
-    logger.info("FAULT TOLERANT background monitor stopped")
+    logger.info("DUAL TEMPERATURE + REFLECTOR background monitor stopped")
 
 # Start background monitor
-monitor_thread = threading.Thread(target=fault_tolerant_background_monitor, daemon=True, name="FaultTolerantMonitor")
+monitor_thread = threading.Thread(target=dual_temp_reflector_background_monitor, daemon=True, name="DualTempReflectorMonitor")
 monitor_thread.start()
 
 # Graceful shutdown handler
 def signal_handler(sig, frame):
     """Graceful shutdown handler"""
-    logger.info("FAULT TOLERANT shutdown signal received...")
+    logger.info("Shutdown signal received...")
     
     try:
         shutdown_event.set()
@@ -1813,18 +2139,15 @@ def signal_handler(sig, frame):
         if arduino_controller:
             # Get final statistics before shutdown
             with state_lock:
-                sensor_status = f"S1:{'OK' if temperature_data['sensor1_connected'] else 'FAIL'} S2:{'OK' if temperature_data['sensor2_connected'] else 'FAIL'}"
-                temp_status = "MONITORED" if temperature_data['temp_monitoring_required'] else "BYPASSED"
-                logger.info(f"Final FAULT TOLERANT Statistics - Temperature: S1={temperature_data['sensor1_temp']:.1f}°C, S2={temperature_data['sensor2_temp']:.1f}°C [{sensor_status}] [TEMP:{temp_status}]")
+                logger.info(f"Final Statistics - Temperature: S1={temperature_data['sensor1_temp']:.1f}°C, S2={temperature_data['sensor2_temp']:.1f}°C")
                 logger.info(f"Final Statistics - Reflector: Count={reflector_data['count']}, Speed={reflector_data['average_speed']:.1f}rpm")
-                logger.info(f"Final FAULT TOLERANCE Status - Sensor1 Fails: {temperature_data['sensor1_fail_count']}, Sensor2 Fails: {temperature_data['sensor2_fail_count']}")
             
             arduino_controller.disconnect()
         
-        logger.info("FAULT TOLERANT backend shutdown completed")
+        logger.info("DUAL TEMPERATURE + REFLECTOR backend shutdown completed")
         
     except Exception as e:
-        logger.error(f"FAULT TOLERANT shutdown error: {e}")
+        logger.error(f"Shutdown error: {e}")
     finally:
         sys.exit(0)
 
@@ -1834,30 +2157,28 @@ signal.signal(signal.SIGTERM, signal_handler)
 
 if __name__ == '__main__':
     logger.info("=" * 80)
-    logger.info("SpectraLoop Backend FAULT TOLERANT DUAL TEMPERATURE + REFLECTOR v3.7")
+    logger.info("SpectraLoop Backend DUAL TEMPERATURE + REFLECTOR COUNTER v3.6 - FIXED")
     logger.info("=" * 80)
     
     try:
         if arduino_controller and arduino_controller.is_connected:
             logger.info(f"Arduino Status: Connected to {arduino_controller.port}")
-            logger.info("FAULT TOLERANT DUAL TEMPERATURE + REFLECTOR FEATURES:")
-            logger.info("   🌡️ Primary sensor (Pin 8) + Secondary sensor (Pin 13) - FAULT TOLERANT")
+            logger.info("DUAL TEMPERATURE + REFLECTOR FEATURES:")
+            logger.info("   🌡️ Primary sensor (Pin 8) + Secondary sensor (Pin 13)")
             logger.info("   📏 Omron reflector counter (Pin A0) + Status LED (Pin 12)")
-            logger.info("   🛡️ FAULT TOLERANT: Works with 0, 1, or 2 temperature sensors")
+            logger.info("   🛡️ Redundant safety monitoring")
             logger.info("   ⚡ 100ms temperature + 5ms reflector readings")
-            logger.info("   📊 Automatic sensor failure detection and recovery")
-            logger.info("   🔄 Temperature monitoring bypass capability")
-            logger.info("   ⚠️ Enhanced safety with fault tolerance")
+            logger.info("   📊 Individual sensor + reflector health tracking")
+            logger.info("   🔄 Automatic sensor + reflector failover capability")
+            logger.info("   ⚠️ Large temperature difference + reflector anomaly warnings")
             logger.info("   📈 Real-time performance monitoring for all systems")
-            logger.info("   🚨 Operation continuity even with sensor failures")
-            logger.info("   📋 Comprehensive statistics and trending")
-            logger.info("   🎯 Ultra-precision reflector counting with calibration")
-            logger.info("   🔧 FAULT TOLERANCE: System continues operation without temperature sensors when needed")
+            logger.info("   🚨 Enhanced safety with worst-case temperature + reflector correlation")
+            logger.info("   ✅ FIXED: No alarm when temperature sensors are disconnected")
         else:
-            logger.warning("Arduino Status: Not Connected - will run in fault tolerant mode")
+            logger.warning("Arduino Status: Not Connected")
         
         logger.info("=" * 80)
-        logger.info("Starting FAULT TOLERANT Flask server...")
+        logger.info("Starting DUAL TEMPERATURE + REFLECTOR Flask server...")
         
         app.run(
             host='0.0.0.0', 
@@ -1871,8 +2192,7 @@ if __name__ == '__main__':
         logger.info("Interrupt received - shutting down...")
         signal_handler(signal.SIGINT, None)
     except Exception as e:
-        logger.error(f"FAULT TOLERANT server error: {e}")
+        logger.error(f"Server error: {e}")
         signal_handler(signal.SIGTERM, None)
     finally:
-        logger.info("FAULT TOLERANT server shutdown complete")
-                
+        logger.info("DUAL TEMPERATURE + REFLECTOR server shutdown complete")
